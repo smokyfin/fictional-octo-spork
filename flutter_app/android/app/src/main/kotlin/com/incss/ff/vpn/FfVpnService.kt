@@ -10,6 +10,8 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.ErrnoException
+import android.system.Os
 import android.util.Log
 import org.json.JSONObject
 
@@ -64,22 +66,51 @@ class FfVpnService : VpnService() {
         tun = pfd
 
         val privateDir = filesDir.absolutePath
+        // Detach so the Rust core can own the FD. If the engine fails to take
+        // ownership (start returns non-zero or throws), we MUST close the raw
+        // FD ourselves — the ParcelFileDescriptor's close() is a no-op after
+        // detachFd(), so without this every failed start would leak one FD.
+        val fd = pfd.detachFd()
+        var ownedByRust = false
         try {
-            // Hand the duped FD to Rust, which keeps ownership.
-            val fd = pfd.detachFd()
             NativeBridge.init()
             val parsed = JSONObject(configJson) // sanity check
             val rc = NativeBridge.start(parsed.toString(), privateDir, fd, tunAddr, mtu)
             if (rc != 0) {
                 Log.e(TAG, "NativeBridge.start returned $rc")
+                closeRawFd(fd)
                 stopTunnel()
             } else {
+                ownedByRust = true
                 VpnEventBus.emit(mapOf("kind" to "status", "running" to true))
             }
         } catch (t: Throwable) {
             Log.e(TAG, "startTunnel failed", t)
             VpnEventBus.emit(mapOf("kind" to "error", "message" to (t.message ?: "start failed")))
+            if (!ownedByRust) closeRawFd(fd)
             stopTunnel()
+        }
+    }
+
+    private fun closeRawFd(fd: Int) {
+        try {
+            // Wrap-and-close is the public API for closing a raw fd that
+            // originated from ParcelFileDescriptor.detachFd().
+            ParcelFileDescriptor.adoptFd(fd).close()
+        } catch (t: Throwable) {
+            // Last-ditch fallback via libcore if adoptFd somehow fails.
+            try {
+                Os.close(java.io.FileDescriptor().also { f ->
+                    val field = java.io.FileDescriptor::class.java.getDeclaredField("descriptor")
+                    field.isAccessible = true
+                    field.setInt(f, fd)
+                })
+            } catch (_: ErrnoException) {
+                // ignore
+            } catch (_: Throwable) {
+                // ignore — best effort cleanup
+            }
+            Log.w(TAG, "closeRawFd($fd) failed via adoptFd", t)
         }
     }
 

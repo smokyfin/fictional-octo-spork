@@ -33,6 +33,35 @@ class AppConfig {
         'outbound': outbound.toJson(),
       };
 
+  /// Inverse of [toJson] — used by [ConfigService.load] to rehydrate a
+  /// previously-saved config. Distinct from [parse] which expects the
+  /// upstream Xray/VLESS JSON format with `outbounds`, `streamSettings`,
+  /// `vnext`, etc.
+  factory AppConfig.fromJson(Map<String, dynamic> json) {
+    final ob = json['outbound'] as Map<String, dynamic>;
+    final reality = ob['reality'] as Map<String, dynamic>;
+    return AppConfig(
+      bridgeRsaId: json['bridge_rsa_id'] as String,
+      bridgeEd25519Id: json['bridge_ed25519_id'] as String,
+      dohServer: json['doh_server'] as String,
+      dohServerIp: json['doh_server_ip'] as String?,
+      outbound: VlessOutbound(
+        tag: ob['tag'] as String,
+        address: ob['address'] as String,
+        port: ob['port'] as int,
+        userId: ob['user_id'] as String,
+        flow: (ob['flow'] ?? '') as String,
+        grpcServiceName: ob['grpc_service_name'] as String,
+        reality: RealitySettings(
+          serverName: reality['server_name'] as String,
+          publicKey: reality['public_key'] as String,
+          shortId: reality['short_id'] as String,
+          fingerprint: reality['fingerprint'] as String,
+        ),
+      ),
+    );
+  }
+
   static AppConfig parse(String body) {
     final raw = jsonDecode(body) as Map<String, dynamic>;
     final outbounds = (raw['outbounds'] as List).cast<Map<String, dynamic>>();
@@ -154,6 +183,8 @@ class ConfigService {
     final prefs = await SharedPreferences.getInstance();
     final json = prefs.getString(_kStoredConfig);
     if (json == null) return null;
-    return AppConfig.parse(json);
+    // Use fromJson, NOT parse() — the saved blob is the flat shape produced
+    // by toJson(), not the upstream Xray/VLESS schema.
+    return AppConfig.fromJson(jsonDecode(json) as Map<String, dynamic>);
   }
 }

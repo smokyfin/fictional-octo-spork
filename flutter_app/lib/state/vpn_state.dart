@@ -84,9 +84,15 @@ class VpnController extends StateNotifier<VpnState> {
   StreamSubscription<Map<String, dynamic>>? _eventsSub;
 
   Future<void> _bootstrap() async {
-    final saved = await _ref.read(configServiceProvider).load();
-    if (saved != null) {
-      state = state.copyWith(config: saved);
+    // Don't let a corrupt saved config prevent the event subscription from
+    // being wired up — surface the error and continue.
+    try {
+      final saved = await _ref.read(configServiceProvider).load();
+      if (saved != null) {
+        state = state.copyWith(config: saved);
+      }
+    } catch (e) {
+      state = state.copyWith(errorMessage: 'Failed to load saved config: $e');
     }
     _eventsSub = _ref.read(vpnChannelProvider).events().listen((event) {
       final kind = event['kind'] as String? ?? '';
@@ -127,7 +133,9 @@ class VpnController extends StateNotifier<VpnState> {
       state = state.copyWith(status: VpnStatus.error, errorMessage: 'No config');
       return;
     }
-    state = state.copyWith(status: VpnStatus.connecting);
+    // Clear any stale error from a previous attempt so the UI doesn't keep
+    // showing it across a successful reconnection.
+    state = state.copyWith(status: VpnStatus.connecting, errorMessage: null);
     try {
       final channel = _ref.read(vpnChannelProvider);
       if (!await channel.hasPermission()) {
@@ -139,7 +147,7 @@ class VpnController extends StateNotifier<VpnState> {
         allowedPackages: state.allowedPackages,
         disallowedPackages: state.disallowedPackages,
       );
-      state = state.copyWith(status: VpnStatus.connected);
+      state = state.copyWith(status: VpnStatus.connected, errorMessage: null);
     } catch (e) {
       state = state.copyWith(status: VpnStatus.error, errorMessage: e.toString());
     }
@@ -149,7 +157,7 @@ class VpnController extends StateNotifier<VpnState> {
     state = state.copyWith(status: VpnStatus.disconnecting);
     try {
       await _ref.read(vpnChannelProvider).disconnect();
-      state = state.copyWith(status: VpnStatus.disconnected);
+      state = state.copyWith(status: VpnStatus.disconnected, errorMessage: null);
     } catch (e) {
       state = state.copyWith(status: VpnStatus.error, errorMessage: e.toString());
     }

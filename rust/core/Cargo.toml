@@ -42,6 +42,9 @@ socket2 = { workspace = true }
 
 leaf = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-android = "0.2"
 
