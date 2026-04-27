@@ -5,7 +5,7 @@
 
 #![cfg(target_os = "android")]
 
-use ff_vpn_core::{config::AppConfig, engine::PlatformContext, pt::Provider};
+use ff_vpn_core::{config::AppConfig, engine::PlatformContext, pt::Provider, util::FdGuard};
 use jni::objects::{JClass, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
@@ -26,6 +26,13 @@ pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_start(
     tun_addr: JString,
     tun_mtu: jint,
 ) -> jint {
+    // Arm a fd-close guard the moment we have the raw fd, so any failure in
+    // the parse/conversion steps below (JSON, IP parse, JNI string lookup)
+    // closes the fd. The guard is disarmed once `ff_vpn_core::start` takes
+    // over — that function arms its own internal guard, so ownership is
+    // continuously held by exactly one party until either bring-up succeeds
+    // or the fd is closed.
+    let fd_guard = FdGuard::new(tun_fd);
     let result: anyhow::Result<()> = (|| {
         let cfg: String = env.get_string(&config_json)?.into();
         let dir: String = env.get_string(&private_dir)?.into();
@@ -38,6 +45,8 @@ pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_start(
             private_dir: PathBuf::from(dir),
             pt_provider: Provider::Leaf,
         };
+        // Hand the fd to the core; it owns close-on-failure from here.
+        fd_guard.disarm();
         ff_vpn_core::start(parsed, ctx)?;
         Ok(())
     })();

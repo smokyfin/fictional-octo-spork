@@ -65,55 +65,13 @@ pub struct Engine {
     pt: Mutex<Option<Box<dyn PluggableTransport>>>,
 }
 
-/// Closes a raw fd when dropped unless `disarm()` is called. Used to make
-/// sure the platform-supplied TUN fd is reclaimed if `Engine::start` fails
-/// partway through bringup — the platform layer (Kotlin / Swift) has already
-/// detached its `ParcelFileDescriptor`/`NWTCPConnection`, so without this
-/// guard a failed start would leak one TUN descriptor per attempt.
-#[cfg(unix)]
-struct FdGuard(Option<i32>);
-
-#[cfg(unix)]
-impl FdGuard {
-    fn new(fd: i32) -> Self {
-        Self(Some(fd))
-    }
-    fn disarm(mut self) {
-        let _ = self.0.take();
-    }
-}
-
-#[cfg(unix)]
-impl Drop for FdGuard {
-    fn drop(&mut self) {
-        if let Some(fd) = self.0.take() {
-            // SAFETY: fd was supplied by the platform layer and ownership was
-            // handed to us; closing it here mirrors POSIX `close(2)`.
-            unsafe {
-                libc::close(fd);
-            }
-        }
-    }
-}
-
-#[cfg(not(unix))]
-struct FdGuard;
-
-#[cfg(not(unix))]
-impl FdGuard {
-    fn new(_fd: i32) -> Self {
-        Self
-    }
-    fn disarm(self) {}
-}
-
 impl Engine {
+    /// `ctx.tun_fd` is owned by the caller (`crate::start`) until this
+    /// function returns `Ok` — see the `FdGuard` in `lib.rs::start`. We do
+    /// **not** close the fd here on failure; doing so would race with the
+    /// guard and could double-close (closing an unrelated fd that POSIX
+    /// reassigned in the meantime).
     pub async fn start(cfg: AppConfig, ctx: PlatformContext) -> Result<Arc<Self>> {
-        // Reclaim the FD if any of the bring-up steps below fail. Disarmed
-        // on the success path so the engine keeps owning it for the whole
-        // session.
-        let fd_guard = FdGuard::new(ctx.tun_fd);
-
         let cancel = Cancel::new();
         let status = Arc::new(Mutex::new(Status {
             running: true,
@@ -174,10 +132,6 @@ impl Engine {
             tasks: Mutex::new(vec![arti_task, leaf_task, dns_task, ipc_task]),
             pt: Mutex::new(Some(pt)),
         });
-
-        // From here on the engine owns the TUN fd via Leaf #2's tun inbound;
-        // disarm the guard so we don't double-close it on success.
-        fd_guard.disarm();
 
         Ok(engine)
     }

@@ -67,12 +67,18 @@ class FfVpnService : VpnService() {
         tun = pfd
 
         val privateDir = filesDir.absolutePath
-        // Detach so the Rust core can own the FD. If the engine fails to take
-        // ownership (start returns non-zero or throws), we MUST close the raw
-        // FD ourselves — the ParcelFileDescriptor's close() is a no-op after
-        // detachFd(), so without this every failed start would leak one FD.
+        // Detach so the Rust core can own the FD. fd-ownership contract:
+        //   - Once `NativeBridge.start` is invoked, the Rust core owns the
+        //     fd and is responsible for closing it on any failure (via its
+        //     `FdGuard`). We MUST NOT close it here on rc != 0 — doing so
+        //     races with Rust and could destroy an unrelated fd that POSIX
+        //     reassigned in the meantime.
+        //   - If we throw BEFORE `NativeBridge.start` is called (JSON parse,
+        //     `exitCountry` injection, JNI marshalling), Rust never saw the
+        //     fd and we MUST close it here. The `nativeStartCalled` flag
+        //     distinguishes the two cases.
         val fd = pfd.detachFd()
-        var ownedByRust = false
+        var nativeStartCalled = false
         try {
             NativeBridge.init()
             val parsed = JSONObject(configJson)
@@ -85,19 +91,18 @@ class FfVpnService : VpnService() {
                 user.put("exit_country", exitCountry)
                 parsed.put("user", user)
             }
+            nativeStartCalled = true
             val rc = NativeBridge.start(parsed.toString(), privateDir, fd, tunAddr, mtu)
             if (rc != 0) {
                 Log.e(TAG, "NativeBridge.start returned $rc")
-                closeRawFd(fd)
                 stopTunnel()
             } else {
-                ownedByRust = true
                 VpnEventBus.emit(mapOf("kind" to "status", "running" to true))
             }
         } catch (t: Throwable) {
             Log.e(TAG, "startTunnel failed", t)
             VpnEventBus.emit(mapOf("kind" to "error", "message" to (t.message ?: "start failed")))
-            if (!ownedByRust) closeRawFd(fd)
+            if (!nativeStartCalled) closeRawFd(fd)
             stopTunnel()
         }
     }

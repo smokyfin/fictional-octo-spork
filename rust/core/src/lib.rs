@@ -72,8 +72,18 @@ pub fn init_logging() {
 /// The TUN file descriptor (`tun_fd`) must already be opened by the platform
 /// (Android `VpnService.Builder.establish()` or iOS `NEPacketTunnelProvider`)
 /// because mobile OSes do not allow user-space processes to create TUNs.
+///
+/// **fd ownership contract:** once this function is called, the Rust core owns
+/// `ctx.tun_fd` and is responsible for closing it on failure (via
+/// [`util::FdGuard`]) — the platform layer must NOT close it on a non-zero
+/// return code. This prevents the double-close race that occurs when both
+/// sides try to clean up a descriptor whose number POSIX may have reassigned.
 pub fn start(cfg: config::AppConfig, ctx: engine::PlatformContext) -> Result<engine::EngineHandle> {
     init_logging();
+    // Single fd-ownership point: armed before any fallible step (including
+    // the `AlreadyRunning` check) and disarmed only after `Engine::start`
+    // has successfully transferred the fd to Leaf #2's TUN inbound.
+    let fd_guard = util::FdGuard::new(ctx.tun_fd);
     let mut slot = current_engine().lock();
     if slot.is_some() {
         return Err(Error::AlreadyRunning);
@@ -81,6 +91,7 @@ pub fn start(cfg: config::AppConfig, ctx: engine::PlatformContext) -> Result<eng
     let engine = rt().block_on(async move { engine::Engine::start(cfg, ctx).await })?;
     let handle = engine.handle();
     *slot = Some(engine);
+    fd_guard.disarm();
     Ok(handle)
 }
 

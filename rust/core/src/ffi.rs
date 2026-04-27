@@ -6,6 +6,7 @@
 use crate::config::AppConfig;
 use crate::engine::PlatformContext;
 use crate::pt::Provider;
+use crate::util::FdGuard;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 
@@ -57,6 +58,12 @@ pub unsafe extern "C" fn ff_vpn_start(
     tun_addr: *const c_char,
     tun_mtu: u16,
 ) -> i32 {
+    // Mirror the JNI shim's fd-ownership pattern: arm a guard on the raw
+    // fd we received from the platform, and only disarm it once we've
+    // handed off to `crate::start` (which arms its own guard). On iOS the
+    // platform passes -1 because the Network Extension uses `packetFlow`
+    // instead of a raw fd; `FdGuard` no-ops on negative values.
+    let fd_guard = FdGuard::new(tun_fd);
     let res = (|| -> crate::Result<()> {
         let cfg = cstr_to_str(config_json)?;
         let dir = cstr_to_str(private_dir)?;
@@ -71,6 +78,7 @@ pub unsafe extern "C" fn ff_vpn_start(
             private_dir: PathBuf::from(dir),
             pt_provider: Provider::Leaf,
         };
+        fd_guard.disarm();
         crate::start(parsed, ctx).map(|_| ())
     })();
     match res {
