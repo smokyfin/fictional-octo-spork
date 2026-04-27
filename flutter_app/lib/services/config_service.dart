@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -138,13 +139,15 @@ class ConfigService {
   Future<AppConfig> parseManual(String text) async => AppConfig.parse(text);
 
   Future<void> save(AppConfig cfg) async {
+    final json = jsonEncode(cfg.toJson());
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kStoredConfig, jsonEncode(cfg.toJson()));
+    await prefs.setString(_kStoredConfig, json);
     // Also persist a copy in the private docs directory for the Rust core
     // to load if it ever needs to start without UI input.
     final dir = await getApplicationDocumentsDirectory();
-    final f = await dir.create(recursive: true);
-    await (f).resolve('config.json');
+    await dir.create(recursive: true);
+    final file = File('${dir.path}/config.json');
+    await file.writeAsString(json, flush: true);
   }
 
   Future<AppConfig?> load() async {

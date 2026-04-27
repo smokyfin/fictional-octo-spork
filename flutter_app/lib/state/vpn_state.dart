@@ -9,6 +9,12 @@ import '../services/vpn_channel.dart';
 
 enum VpnStatus { disconnected, connecting, connected, disconnecting, error }
 
+/// Sentinel used so `copyWith` can distinguish "argument not provided" from
+/// "argument explicitly set to null" — without the sentinel, `null` is
+/// indistinguishable from a missing parameter and nullable fields can't be
+/// cleared.
+const Object _unset = Object();
+
 @immutable
 class VpnState {
   const VpnState({
@@ -33,22 +39,32 @@ class VpnState {
 
   VpnState copyWith({
     VpnStatus? status,
-    AppConfig? config,
-    String? exitCountry,
-    List<String>? allowedPackages,
-    List<String>? disallowedPackages,
-    String? errorMessage,
-    Map<String, dynamic>? lastStatusJson,
+    Object? config = _unset,
+    Object? exitCountry = _unset,
+    Object? allowedPackages = _unset,
+    Object? disallowedPackages = _unset,
+    Object? errorMessage = _unset,
+    Object? lastStatusJson = _unset,
     List<String>? logs,
   }) =>
       VpnState(
         status: status ?? this.status,
-        config: config ?? this.config,
-        exitCountry: exitCountry ?? this.exitCountry,
-        allowedPackages: allowedPackages ?? this.allowedPackages,
-        disallowedPackages: disallowedPackages ?? this.disallowedPackages,
-        errorMessage: errorMessage,
-        lastStatusJson: lastStatusJson ?? this.lastStatusJson,
+        config: identical(config, _unset) ? this.config : config as AppConfig?,
+        exitCountry: identical(exitCountry, _unset)
+            ? this.exitCountry
+            : exitCountry as String?,
+        allowedPackages: identical(allowedPackages, _unset)
+            ? this.allowedPackages
+            : allowedPackages as List<String>?,
+        disallowedPackages: identical(disallowedPackages, _unset)
+            ? this.disallowedPackages
+            : disallowedPackages as List<String>?,
+        errorMessage: identical(errorMessage, _unset)
+            ? this.errorMessage
+            : errorMessage as String?,
+        lastStatusJson: identical(lastStatusJson, _unset)
+            ? this.lastStatusJson
+            : lastStatusJson as Map<String, dynamic>?,
         logs: logs ?? this.logs,
       );
 }
