@@ -34,6 +34,7 @@ class FfVpnService : VpnService() {
     private fun startTunnel(intent: Intent) {
         ensureForeground()
         val configJson = intent.getStringExtra(EXTRA_CONFIG) ?: return stopSelfSafely()
+        val exitCountry = intent.getStringExtra(EXTRA_EXIT_COUNTRY)
         val allowed = intent.getStringArrayListExtra(EXTRA_ALLOWED)
         val disallowed = intent.getStringArrayListExtra(EXTRA_DISALLOWED)
 
@@ -74,7 +75,16 @@ class FfVpnService : VpnService() {
         var ownedByRust = false
         try {
             NativeBridge.init()
-            val parsed = JSONObject(configJson) // sanity check
+            val parsed = JSONObject(configJson)
+            // Inject the user-selected Tor exit country into the config blob
+            // under `user.exit_country` — the Rust `AppConfig::user::exit_country`
+            // field is what `arti_runtime.rs` reads when applying StreamPrefs.
+            // Without this the country picker would silently no-op.
+            if (!exitCountry.isNullOrBlank()) {
+                val user = parsed.optJSONObject("user") ?: JSONObject()
+                user.put("exit_country", exitCountry)
+                parsed.put("user", user)
+            }
             val rc = NativeBridge.start(parsed.toString(), privateDir, fd, tunAddr, mtu)
             if (rc != 0) {
                 Log.e(TAG, "NativeBridge.start returned $rc")

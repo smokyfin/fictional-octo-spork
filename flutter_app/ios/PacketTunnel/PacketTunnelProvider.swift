@@ -15,12 +15,35 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         guard
             let providerProtocol = self.protocolConfiguration as? NETunnelProviderProtocol,
             let providerConfig = providerProtocol.providerConfiguration,
-            let configJson = providerConfig["config"] as? String
+            let baseConfigJson = providerConfig["config"] as? String
         else {
             completionHandler(NSError(domain: "ff.vpn", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "missing provider config"]))
             return
         }
+
+        // Inject the user-selected Tor exit country into the config JSON under
+        // `user.exit_country`, which is what `arti_runtime.rs` reads when
+        // applying `StreamPrefs`. Without this the country picker would
+        // silently no-op on iOS.
+        let configJson: String = {
+            let exitCountry = providerConfig["exitCountry"] as? String
+            guard let exitCountry = exitCountry, !exitCountry.isEmpty,
+                  let data = baseConfigJson.data(using: .utf8),
+                  var root = (try? JSONSerialization.jsonObject(with: data))
+                    as? [String: Any]
+            else {
+                return baseConfigJson
+            }
+            var user = (root["user"] as? [String: Any]) ?? [:]
+            user["exit_country"] = exitCountry
+            root["user"] = user
+            guard let merged = try? JSONSerialization.data(withJSONObject: root),
+                  let str = String(data: merged, encoding: .utf8) else {
+                return baseConfigJson
+            }
+            return str
+        }()
 
         let tunAddr = "10.10.0.2"
         let mtu: NSNumber = 1500
