@@ -98,7 +98,21 @@ class VpnController extends StateNotifier<VpnState> {
       final kind = event['kind'] as String? ?? '';
       switch (kind) {
         case 'status':
-          state = state.copyWith(lastStatusJson: event);
+          // Drive status from the native side so an unexpected service stop
+          // (Rust crash, OS killed the foreground service, battery saver,
+          // etc.) is reflected in the UI — not just our optimistic state.
+          // - running:true  → connected (covers connecting → connected too).
+          // - running:false → disconnected, but only if we're not currently
+          //   in the connecting handshake (the handshake's first event may
+          //   transiently report running:false before the engine flips).
+          final running = event['running'];
+          VpnStatus? next;
+          if (running == true) {
+            next = VpnStatus.connected;
+          } else if (running == false && state.status != VpnStatus.connecting) {
+            next = VpnStatus.disconnected;
+          }
+          state = state.copyWith(lastStatusJson: event, status: next);
           break;
         case 'log':
           final logs = [...state.logs, event['line'] as String? ?? ''];
@@ -147,7 +161,11 @@ class VpnController extends StateNotifier<VpnState> {
         allowedPackages: state.allowedPackages,
         disallowedPackages: state.disallowedPackages,
       );
-      state = state.copyWith(status: VpnStatus.connected, errorMessage: null);
+      // Stay in `connecting` — the platform method is fire-and-forget on
+      // Android (startForegroundService returns before the Rust engine has
+      // finished bootstrapping Arti / Leaf / DNS). The 'status' event with
+      // running:true (emitted by FfVpnService once NativeBridge.start succeeds)
+      // is what flips us to `connected`.
     } catch (e) {
       state = state.copyWith(status: VpnStatus.error, errorMessage: e.toString());
     }
