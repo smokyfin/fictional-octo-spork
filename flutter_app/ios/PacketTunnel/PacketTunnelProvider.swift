@@ -56,8 +56,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         settings.dnsSettings = dns
         settings.mtu = mtu
 
-        setTunnelNetworkSettings(settings) { [weak self] error in
-            guard let self = self else { return }
+        // Strong-capture `self`: the system retains the provider for the
+        // duration of `startTunnel`, and `[weak self]` here would create a
+        // code path that returns without ever invoking `completionHandler`,
+        // violating the `NEPacketTunnelProvider` API contract and leaving
+        // the system VPN state wedged.
+        setTunnelNetworkSettings(settings) { error in
             if let error = error {
                 completionHandler(error)
                 return
