@@ -84,7 +84,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             if rc != 0 {
                 let cmsg = ff_vpn_last_error()
-                let msg = cmsg.map { String(cString: $0) } ?? "unknown"
+                let msg: String
+                if let cmsg = cmsg {
+                    msg = String(cString: cmsg)
+                    ff_vpn_free_string(cmsg)
+                } else {
+                    msg = "unknown"
+                }
                 os_log("ff_vpn_start failed: %{public}s", log: self.log, type: .error, msg)
                 completionHandler(NSError(domain: "ff.vpn", code: Int(rc),
                     userInfo: [NSLocalizedDescriptionKey: msg]))
@@ -111,4 +117,5 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     _ tunMtu: UInt16
 ) -> Int32
 @_silgen_name("ff_vpn_stop") func ff_vpn_stop() -> Int32
-@_silgen_name("ff_vpn_last_error") func ff_vpn_last_error() -> UnsafePointer<CChar>?
+@_silgen_name("ff_vpn_last_error") func ff_vpn_last_error() -> UnsafeMutablePointer<CChar>?
+@_silgen_name("ff_vpn_free_string") func ff_vpn_free_string(_ ptr: UnsafeMutablePointer<CChar>)

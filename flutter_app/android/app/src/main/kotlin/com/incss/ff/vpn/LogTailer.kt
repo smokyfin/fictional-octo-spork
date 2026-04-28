@@ -36,13 +36,14 @@ object LogTailer {
             try {
                 BufferedReader(InputStreamReader(proc.inputStream)).useLines { lines ->
                     for (line in lines) {
-                        // Skip the noise from VpnEventBus / Flutter platform
-                        // channels so we don't feed our own log messages
-                        // back into the bus.
-                        if (line.contains("flutter") ||
-                            line.contains("FlutterJNI") ||
-                            line.contains("VpnEventBus") ||
-                            line.contains("Choreographer")
+                        // Filter out the noisiest Flutter / system tags but
+                        // keep everything from the Rust core so the user can
+                        // diagnose connection problems. Rust tracing-android
+                        // uses the tag prefix "ff_vpn".
+                        if (line.contains(" Choreographer ") ||
+                            line.contains(" FlutterJNI ") ||
+                            line.contains(" flutter ") ||
+                            line.contains(" SurfaceSyncGroup ")
                         ) continue
                         VpnEventBus.emitLog(line)
                     }

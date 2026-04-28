@@ -51,19 +51,37 @@ fn current_engine() -> &'static Mutex<Option<Arc<engine::Engine>>> {
 }
 
 /// Initialise logging exactly once. Safe to call from any platform shim.
+///
+/// On Android we route through `tracing-android` so log records reach
+/// `logcat` (the only sink the OS makes available — there is no real
+/// stdout for Android apps). On every other platform we fall back to
+/// the standard `fmt` subscriber.
 pub fn init_logging() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static INIT: AtomicBool = AtomicBool::new(false);
     if INIT.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,leaf=info,arti=info")),
-        )
-        .with_target(false)
-        .try_init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,leaf=info,arti=info"));
+
+    #[cfg(target_os = "android")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let android_layer = tracing_android::layer("ff_vpn").ok();
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(android_layer)
+            .try_init();
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .try_init();
+    }
     info!("ff_vpn_core logging initialised");
 }
 

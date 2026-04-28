@@ -113,8 +113,12 @@ class FfVpnService : VpnService() {
             VpnEventBus.emitLog("[svc] calling NativeBridge.start (exitCountry=${exitCountry ?: "-"})")
             val rc = NativeBridge.start(parsed.toString(), privateDir, fd, tunAddr, mtu)
             if (rc != 0) {
-                Log.e(TAG, "NativeBridge.start returned $rc")
-                VpnEventBus.emitLog("[svc] NativeBridge.start returned non-zero rc=$rc; stopping")
+                val err = runCatching { NativeBridge.lastError() }.getOrNull()
+                Log.e(TAG, "NativeBridge.start returned $rc: ${err ?: "(no error string)"}")
+                VpnEventBus.emitLog("[svc] NativeBridge.start rc=$rc: ${err ?: "(no error)"}")
+                if (err != null) {
+                    VpnEventBus.emit(mapOf("kind" to "error", "message" to err))
+                }
                 stopTunnel()
             } else {
                 VpnEventBus.emitLog("[svc] NativeBridge.start ok; tunnel up")
