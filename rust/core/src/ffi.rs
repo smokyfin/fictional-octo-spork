@@ -10,7 +10,7 @@ use crate::util::FdGuard;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 
-/// Last error message, in thread-local storage. NUL-terminated UTF-8.
+// Last error message, in thread-local storage. NUL-terminated UTF-8.
 thread_local! {
     static LAST_ERR: std::cell::RefCell<Option<CString>> =
         const { std::cell::RefCell::new(None) };

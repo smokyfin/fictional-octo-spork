@@ -1,0 +1,47 @@
+name: flutter
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ['**']
+
+defaults:
+  run:
+    working-directory: flutter_app
+
+jobs:
+  analyze:
+    name: flutter analyze + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.27.x'
+
+      # The Flutter Android/iOS scaffold (Gradle wrapper, Runner.xcodeproj,
+      # GeneratedPluginRegistrant, etc.) is regenerated locally with
+      # `flutter create --platforms=android,ios .`. We do that here in CI
+      # so `flutter pub get` and `flutter analyze` see a complete project
+      # without us committing the generated boilerplate. The hand-written
+      # platform code under `android/app/src/main/kotlin/...` and
+      # `ios/PacketTunnel/...` is preserved.
+      - name: Materialise Flutter scaffold (idempotent)
+        run: |
+          flutter create --platforms=android,ios --org com.incss --project-name ff_vpn .
+          # `flutter create` drops a `test/widget_test.dart` that references
+          # the default `MyApp` template; our entry-point is `FfVpnApp`, and
+          # we have our own tests under `test/` already. Remove it.
+          rm -f test/widget_test.dart
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter analyze
+        run: flutter analyze --no-fatal-infos lib test
+
+      - name: flutter test
+        run: flutter test --reporter expanded

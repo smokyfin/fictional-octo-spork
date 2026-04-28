@@ -2,98 +2,130 @@
 //!
 //! The Java/Kotlin side declares these as native methods on
 //! `com.incss.ff.vpn.NativeBridge`.
+//!
+//! `jni 0.22` split `JNIEnv` into `EnvUnowned` (FFI-safe, what the JVM
+//! hands us) and `Env` (the full-API handle obtained via
+//! `EnvUnowned::with_env`). All native methods take `EnvUnowned<'local>`
+//! and lift it into an `Env` for the duration of the body. The
+//! `with_env` body always returns `Ok(_)` — we map every internal
+//! failure to a return code so the JVM-facing `ErrorPolicy`
+//! (`ThrowRuntimeExAndDefault`) only fires on a Rust panic.
 
 #![cfg(target_os = "android")]
 
 use ff_vpn_core::{config::AppConfig, engine::PlatformContext, pt::Provider, util::FdGuard};
+use jni::errors::{Result as JniResult, ThrowRuntimeExAndDefault};
 use jni::objects::{JClass, JString};
-use jni::sys::{jint, jlong, jstring};
-use jni::JNIEnv;
+use jni::sys::{jint, jstring};
+use jni::EnvUnowned;
 use std::path::PathBuf;
 
 #[no_mangle]
-pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_init(_env: JNIEnv, _class: JClass) {
-    ff_vpn_core::init_logging();
+pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_init<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) {
+    env.with_env(|_env| -> JniResult<()> {
+        ff_vpn_core::init_logging();
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>();
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_start(
-    mut env: JNIEnv,
-    _class: JClass,
-    config_json: JString,
-    private_dir: JString,
+pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_start<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    config_json: JString<'local>,
+    private_dir: JString<'local>,
     tun_fd: jint,
-    tun_addr: JString,
+    tun_addr: JString<'local>,
     tun_mtu: jint,
 ) -> jint {
-    // Arm a fd-close guard the moment we have the raw fd, so any failure in
-    // the parse/conversion steps below (JSON, IP parse, JNI string lookup)
-    // closes the fd. The guard is disarmed once `ff_vpn_core::start` takes
-    // over — that function arms its own internal guard, so ownership is
-    // continuously held by exactly one party until either bring-up succeeds
-    // or the fd is closed.
+    // Arm a fd-close guard the moment we have the raw fd. Any failure in
+    // the parse/conversion steps below closes the fd. The guard is
+    // disarmed once `ff_vpn_core::start` takes over — that function arms
+    // its own internal guard, so ownership is continuously held by
+    // exactly one party until either bring-up succeeds or the fd is
+    // closed.
     let fd_guard = FdGuard::new(tun_fd);
-    let result: anyhow::Result<()> = (|| {
-        let cfg: String = env.get_string(&config_json)?.into();
-        let dir: String = env.get_string(&private_dir)?.into();
-        let addr: String = env.get_string(&tun_addr)?.into();
-        let parsed: AppConfig = serde_json::from_str(&cfg)?;
-        let ctx = PlatformContext {
-            tun_fd,
-            tun_addr: addr.parse()?,
-            tun_mtu: tun_mtu as u16,
-            private_dir: PathBuf::from(dir),
-            pt_provider: Provider::Leaf,
-        };
-        // Hand the fd to the core; it owns close-on-failure from here.
-        fd_guard.disarm();
-        ff_vpn_core::start(parsed, ctx)?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => 0,
-        Err(e) => {
-            tracing::error!(?e, "JNI start failed");
-            1
-        }
-    }
+
+    unowned_env
+        .with_env(|env| -> JniResult<jint> {
+            let inner = || -> anyhow::Result<()> {
+                let cfg: String = config_json
+                    .try_to_string(env)
+                    .map_err(|e| anyhow::anyhow!("try_to_string config: {e}"))?;
+                let dir: String = private_dir
+                    .try_to_string(env)
+                    .map_err(|e| anyhow::anyhow!("try_to_string private_dir: {e}"))?;
+                let addr: String = tun_addr
+                    .try_to_string(env)
+                    .map_err(|e| anyhow::anyhow!("try_to_string tun_addr: {e}"))?;
+                let parsed: AppConfig = serde_json::from_str(&cfg)?;
+                let ctx = PlatformContext {
+                    tun_fd,
+                    tun_addr: addr.parse()?,
+                    tun_mtu: tun_mtu as u16,
+                    private_dir: PathBuf::from(dir),
+                    pt_provider: Provider::Leaf,
+                };
+                // Hand the fd to the core; it owns close-on-failure from here.
+                fd_guard.disarm();
+                ff_vpn_core::start(parsed, ctx)?;
+                Ok(())
+            };
+            Ok(match inner() {
+                Ok(()) => 0,
+                Err(e) => {
+                    tracing::error!(?e, "JNI start failed");
+                    1
+                }
+            })
+        })
+        .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_stop(
-    _env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_stop<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
 ) -> jint {
-    match ff_vpn_core::stop() {
-        Ok(()) => 0,
-        Err(_) => 1,
-    }
+    env.with_env(|_env| -> JniResult<jint> {
+        Ok(match ff_vpn_core::stop() {
+            Ok(()) => 0,
+            Err(_) => 1,
+        })
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_statusJson<'a>(
-    env: JNIEnv<'a>,
-    _class: JClass<'a>,
+pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_statusJson<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
 ) -> jstring {
-    let s = serde_json::to_string(&ff_vpn_core::status()).unwrap_or_else(|_| "{}".into());
-    env.new_string(s)
-        .map(|j| j.into_raw())
-        .unwrap_or(std::ptr::null_mut())
+    env.with_env(|env| -> JniResult<jstring> {
+        let s = serde_json::to_string(&ff_vpn_core::status()).unwrap_or_else(|_| "{}".into());
+        Ok(env
+            .new_string(&s)
+            .map(|j| j.into_raw())
+            .unwrap_or(std::ptr::null_mut()))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_ipcAuthToken<'a>(
-    env: JNIEnv<'a>,
-    _class: JClass<'a>,
+pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_ipcAuthToken<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
 ) -> jstring {
-    let t = ff_vpn_core::ipc::current_auth_token();
-    env.new_string(t)
-        .map(|j| j.into_raw())
-        .unwrap_or(std::ptr::null_mut())
-}
-
-// Suppress unused-jlong import warning.
-#[allow(dead_code)]
-fn _silence() -> jlong {
-    0
+    env.with_env(|env| -> JniResult<jstring> {
+        let t = ff_vpn_core::ipc::current_auth_token();
+        Ok(env
+            .new_string(&t)
+            .map(|j| j.into_raw())
+            .unwrap_or(std::ptr::null_mut()))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }
