@@ -36,7 +36,21 @@ fn fresh_runtime_id() -> u16 {
 /// the bridge handshake itself rides over Arti's transport plugin.
 pub fn pt_socks_inbound_config(socks: &SocksEndpoint) -> Result<String> {
     let cfg = json!({
-        "log": { "level": "info" },
+        // Disable leaf's own logger setup. We've already installed a global
+        // tracing-subscriber (with a tracing-android layer on Android) in
+        // `ff_vpn_core::init_logging`, and leaf's `setup_logger` calls
+        // `tracing_subscriber::registry()...init()` unconditionally on the
+        // first start, which panics with "a global default subscriber has
+        // already been set". The panic poisons leaf's internal HANDLE
+        // RwLock, so the second `leaf::start` panics on PoisonError —
+        // exactly the cascade we observed.
+        //
+        // With level=none, leaf's `setup_logger` early-returns before
+        // touching the global subscriber. Leaf's own `tracing::*!` calls
+        // still flow through our subscriber thanks to the shared registry,
+        // so we keep visibility — see the EnvFilter directives
+        // `leaf=info,arti=info` in init_logging.
+        "log": { "level": "none" },
         "inbounds": [{
             "tag": "socks-pt",
             "protocol": "socks",
@@ -71,7 +85,9 @@ pub fn main_engine_config(
     let reality = &cfg.outbound.reality;
 
     let leaf_cfg = json!({
-        "log": { "level": "info" },
+        // See the comment in `pt_socks_inbound_config` for why this is
+        // "none" rather than "info".
+        "log": { "level": "none" },
         "inbounds": [
             {
                 "tag": "tun-in",
