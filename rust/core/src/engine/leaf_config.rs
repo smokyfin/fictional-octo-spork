@@ -66,6 +66,7 @@ pub fn main_engine_config(
     cfg: &AppConfig,
     ctx: &PlatformContext,
     arti_socks: &SocksEndpoint,
+    dns_port: u16,
 ) -> Result<String> {
     let reality = &cfg.outbound.reality;
 
@@ -132,13 +133,29 @@ pub fn main_engine_config(
                 }
             },
             { "tag": "direct", "protocol": "direct" },
-            { "tag": "drop",   "protocol": "drop"   }
+            { "tag": "drop",   "protocol": "drop"   },
+            // DNAT-redirect outbound for DNS. Any UDP/53 traffic that the
+            // router targets here will have its destination rewritten to
+            // `127.0.0.1:<dns_port>`, where our embedded DoH-bridging UDP
+            // server is listening. We can't bind UDP/53 directly because
+            // Android sandbox forbids unprivileged UIDs from binding
+            // privileged ports — even on the TUN virtual interface.
+            {
+                "tag": "dns-redir",
+                "protocol": "redirect",
+                "settings": {
+                    "address": "127.0.0.1",
+                    "port": dns_port
+                }
+            }
         ],
-        // Send everything to the proxy chain. Per-app filtering is handled at
-        // the OS level (Android `addAllowedApplication`/`addDisallowedApplication`);
+        // Routing: hijack UDP/53 first, then send everything else to the
+        // proxy chain. Per-app filtering is handled at the OS level
+        // (Android `addAllowedApplication`/`addDisallowedApplication`);
         // on iOS the Network Extension defines include/exclude routes.
         "router": {
             "rules": [
+                { "network": ["udp"], "portRange": ["53-53"], "target": "dns-redir" },
                 { "ip": ["0.0.0.0/0", "::/0"], "target": "proxy" }
             ]
         }

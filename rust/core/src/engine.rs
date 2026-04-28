@@ -104,22 +104,22 @@ impl Engine {
         info!(socks = %arti_socks.addr, "Arti up");
         status.lock().arti_socks = Some(arti_socks.addr.to_string());
 
-        // 3. Leaf #2 — TUN inbound + VLESS+Reality outbound chain (and SOCKS
-        //    pre-stage that hands traffic off to Arti).
-        let leaf_main_cfg = leaf_config::main_engine_config(&cfg, &ctx, &arti_socks)?;
+        // 3. Embedded DNS resolver — bound on 127.0.0.1:<random high port>
+        //    because Android sandbox forbids binding privileged ports.
+        //    Leaf #2's router DNATs all UDP/53 traffic to this port.
+        let dns = crate::dns::spawn_dns_proxy(cfg.clone(), arti_socks.clone(), cancel.clone())
+            .await?;
+        let dns_port = dns.bound_port;
+        let dns_task = dns.task;
+
+        // 4. Leaf #2 — TUN inbound + VLESS+Reality outbound chain (and SOCKS
+        //    pre-stage that hands traffic off to Arti). The router includes
+        //    a DNAT rule for udp/53 → 127.0.0.1:dns_port.
+        let leaf_main_cfg =
+            leaf_config::main_engine_config(&cfg, &ctx, &arti_socks, dns_port)?;
         let leaf_task =
             leaf_config::run_leaf_with_config("leaf-main", leaf_main_cfg, cancel.clone())?;
         info!("Leaf #2 (TUN→VLESS) up");
-
-        // 4. Embedded DNS resolver bound to the TUN address — proxies queries
-        //    through the VLESS path to the configured DoH server.
-        let dns_task = crate::dns::spawn_dns_proxy(
-            cfg.clone(),
-            ctx.tun_addr,
-            arti_socks.clone(),
-            cancel.clone(),
-        )
-        .await?;
 
         // 5. IPC server — UI ↔ engine bridge. Lives in the private dir.
         let ipc_task =
