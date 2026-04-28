@@ -85,6 +85,26 @@ pub fn init_logging() {
     info!("ff_vpn_core logging initialised");
 }
 
+/// Install the rustls process-wide `CryptoProvider` (ring) exactly once.
+///
+/// rustls 0.23 stopped picking a default crypto backend automatically: every
+/// `RustlsRuntime` / `ClientConfig` will fail at first use unless one is
+/// installed. We do this here, before any of arti / leaf / reqwest spin up
+/// their own `RustlsRuntime`s, so the Tor handshake (which is gated on TLS
+/// to the directory authorities) actually completes.
+///
+/// `install_default()` returns `Err` if a provider is already installed —
+/// which is fine, we just ignore it so this function is idempotent and safe
+/// to call from multiple platform shims.
+fn install_rustls_crypto_provider() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Start the VPN engine with the given parsed configuration and platform context.
 ///
 /// The TUN file descriptor (`tun_fd`) must already be opened by the platform
@@ -98,6 +118,7 @@ pub fn init_logging() {
 /// sides try to clean up a descriptor whose number POSIX may have reassigned.
 pub fn start(cfg: config::AppConfig, ctx: engine::PlatformContext) -> Result<engine::EngineHandle> {
     init_logging();
+    install_rustls_crypto_provider();
     // Single fd-ownership point: armed before any fallible step (including
     // the `AlreadyRunning` check) and disarmed only after `Engine::start`
     // has successfully transferred the fd to Leaf #2's TUN inbound.
