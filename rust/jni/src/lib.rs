@@ -54,14 +54,14 @@ pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_start<'local>(
         .with_env(|env| -> JniResult<jint> {
             let inner = || -> anyhow::Result<()> {
                 let cfg: String = config_json
-                    .to_string(env)
-                    .map_err(|e| anyhow::anyhow!("to_string config: {e}"))?;
+                    .try_to_string(env)
+                    .map_err(|e| anyhow::anyhow!("try_to_string config: {e}"))?;
                 let dir: String = private_dir
-                    .to_string(env)
-                    .map_err(|e| anyhow::anyhow!("to_string private_dir: {e}"))?;
+                    .try_to_string(env)
+                    .map_err(|e| anyhow::anyhow!("try_to_string private_dir: {e}"))?;
                 let addr: String = tun_addr
-                    .to_string(env)
-                    .map_err(|e| anyhow::anyhow!("to_string tun_addr: {e}"))?;
+                    .try_to_string(env)
+                    .map_err(|e| anyhow::anyhow!("try_to_string tun_addr: {e}"))?;
                 let parsed: AppConfig = serde_json::from_str(&cfg)?;
                 let ctx = PlatformContext {
                     tun_fd,
