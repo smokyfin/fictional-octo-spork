@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "com.incss.ff.vpn"
     compileSdk = 34
-    ndkVersion = "26.1.10909125"
+    ndkVersion = "26.3.11579264"
 
     defaultConfig {
         applicationId = "com.incss.ff.vpn"
@@ -28,17 +28,15 @@ android {
 
     sourceSets {
         getByName("main") {
-            jniLibs.srcDirs(
-                "../../../rust/target/aarch64-linux-android/release",
-                "../../../rust/target/armv7-linux-androideabi/release",
-                "../../../rust/target/x86_64-linux-android/release",
-            )
+            // cargo-ndk -o places .so files in <jniLibs>/<abi>/lib*.so
+            jniLibs.srcDirs("src/main/jniLibs")
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
         }
     }

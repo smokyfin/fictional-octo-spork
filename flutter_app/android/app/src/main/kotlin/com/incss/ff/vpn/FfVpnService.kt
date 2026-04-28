@@ -166,7 +166,7 @@ class FfVpnService : VpnService() {
         val notif: Notification = Notification.Builder(this, NOTIF_CHANNEL_ID)
             .setContentTitle("ff-vpn")
             .setContentText("Routing through Tor + VLESS")
-            .setSmallIcon(android.R.drawable.stat_sys_vpn_ic)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
