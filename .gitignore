@@ -1,6 +1,5 @@
 # Rust
 rust/target/
-rust/Cargo.lock
 
 # Flutter
 flutter_app/.dart_tool/
