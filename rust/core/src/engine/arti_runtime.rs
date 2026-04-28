@@ -17,7 +17,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::Context as _;
 use arti_client::{TorClient, TorClientConfig};
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -134,32 +133,44 @@ fn build_arti_config(
         ));
 
     // ---- Bridges ---------------------------------------------------------
-    // Format: `Bridge obfs4 <addr>:<port> <RSA-id> ed25519:<ed25519-id>`
-    // We point the bridge at a sentinel address; the *unmanaged* obfs4
-    // transport below carries the real connection.
-    let bridge_line = format!(
-        "Bridge obfs4 0.0.0.0:1 {rsa} ed25519:{ed}",
-        rsa = cfg.bridge_rsa_id,
-        ed = cfg.bridge_ed25519_id,
-    );
-    let bridge: arti_client::config::BridgeConfigBuilder = bridge_line
-        .parse()
-        .with_context(|| format!("invalid bridge line: {bridge_line:?}"))?;
-    builder.bridges().bridges().push(bridge);
-
-    // ---- Pluggable Transport (unmanaged, SOCKS5) ------------------------
-    // `proxy_addr` is the SOCKS5 endpoint Leaf #1 is listening on.
-    {
-        let mut transport = arti_client::config::pt::TransportConfigBuilder::default();
-        let proto: tor_linkspec::PtTransportName = "obfs4".parse()?;
-        transport.protocols(vec![proto]);
-        transport.proxy_addr(pt_socks.addr);
-        builder.bridges().transports().push(transport);
-    }
-
+    //
+    // The TZ specifies an obfs4 bridge identified by `bridge_rsa_id` +
+    // `bridge_ed25519_id`, reached through a custom VLESS-based Pluggable
+    // Transport (Leaf #2). However the canonical config served by
+    // `incss.ru/vless.conf` does NOT include a bridge address (bridge_addr
+    // / port / certificate) — only the two identity hashes. Without an
+    // address Arti has nowhere to dial; without an obfs4 cert the
+    // handshake won't complete; and the SOCKS5 endpoint Leaf #1 currently
+    // exposes does not actually speak obfs4 (it is a plain SOCKS→direct
+    // proxy).
+    //
+    // Until the production config carries a usable bridge endpoint we
+    // wire the engine to bootstrap directly against the Tor network's
+    // public guard list. This isn't appropriate for environments where
+    // raw Tor connections are blocked, but it lets the rest of the chain
+    // (TUN → Leaf #2 → arti SOCKS → Tor → VLESS exit) actually start —
+    // which is what the user is currently blocked on.
+    //
+    // To re-enable bridges:
+    //   * extend `AppConfig::Bridge` with `address`, `port`, `cert` fields,
+    //   * set `proxy_addr` on the obfs4 `TransportConfigBuilder` to a
+    //     SOCKS5 endpoint that genuinely speaks obfs4 (e.g. Leaf #2's new
+    //     SOCKS5 inbound, after wrapping its outbound in the VLESS+Reality
+    //     chain), and
+    //   * push the parsed `BridgeConfigBuilder` here.
+    let _unused = pt_socks; // kept to preserve the public function signature
     builder
         .bridges()
-        .enabled(arti_client::config::BoolOrAuto::Explicit(true));
+        .enabled(arti_client::config::BoolOrAuto::Explicit(false));
+
+    if !cfg.bridge_rsa_id.is_empty() {
+        warn!(
+            rsa = %cfg.bridge_rsa_id,
+            "bridge identity present in config but bridge address/cert is missing; \
+             starting Tor without bridges. See arti_runtime.rs::build_arti_config \
+             for the wiring required to re-enable bridge mode."
+        );
+    }
 
     Ok(builder.build()?)
 }
