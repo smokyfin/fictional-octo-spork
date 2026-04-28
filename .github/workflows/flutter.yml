@@ -20,7 +20,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.24.x'
+          flutter-version: '3.27.x'
 
       # The Flutter Android/iOS scaffold (Gradle wrapper, Runner.xcodeproj,
       # GeneratedPluginRegistrant, etc.) is regenerated locally with
@@ -30,7 +30,12 @@ jobs:
       # platform code under `android/app/src/main/kotlin/...` and
       # `ios/PacketTunnel/...` is preserved.
       - name: Materialise Flutter scaffold (idempotent)
-        run: flutter create --platforms=android,ios --org com.incss --project-name ff_vpn .
+        run: |
+          flutter create --platforms=android,ios --org com.incss --project-name ff_vpn .
+          # `flutter create` drops a `test/widget_test.dart` that references
+          # the default `MyApp` template; our entry-point is `FfVpnApp`, and
+          # we have our own tests under `test/` already. Remove it.
+          rm -f test/widget_test.dart
 
       - name: flutter pub get
         run: flutter pub get
