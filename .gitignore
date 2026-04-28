@@ -1,0 +1,26 @@
+# Rust
+rust/target/
+rust/Cargo.lock
+
+# Flutter
+flutter_app/.dart_tool/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+flutter_app/build/
+flutter_app/.idea/
+flutter_app/android/.gradle/
+flutter_app/android/local.properties
+flutter_app/android/.idea/
+flutter_app/android/build/
+flutter_app/android/app/build/
+flutter_app/android/app/src/main/jniLibs/
+flutter_app/ios/Pods/
+flutter_app/ios/.symlinks/
+flutter_app/ios/Flutter/Flutter.framework
+flutter_app/ios/Flutter/Generated.xcconfig
+flutter_app/ios/Flutter/flutter_export_environment.sh
+flutter_app/ios/PacketTunnel/Frameworks/
+
+# OS
+.DS_Store
+Thumbs.db

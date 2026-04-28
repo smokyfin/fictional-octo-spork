@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "jni",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+authors = ["fictional-octo-spork contributors"]
+publish = false
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+parking_lot = "0.12"
+rand = "0.9"
+hex = "0.4"
+bytes = "1"
+async-trait = "0.1"
+futures = "0.3"
+once_cell = "1"
+url = "2"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2"] }
+
+# Tor (Arti) — must be >= 0.41. We use arti-client directly (no CLI binary).
+arti-client = { version = "0.41", default-features = false, features = ["tokio", "rustls", "bridge-client", "pt-client", "geoip"] }
+tor-rtcompat = { version = "0.41", default-features = false, features = ["tokio", "rustls"] }
+tor-linkspec = "0.41"
+tor-geoip = "0.41"
+
+# DNS proxy on TUN
+hickory-proto = { version = "0.26", default-features = false }
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
+
+# Networking helpers
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+socket2 = { version = "0.6", features = ["all"] }
+
+# Leaf — proxy framework (TUN, VLESS+Reality+gRPC, SOCKS in/out, multi-thread).
+# Pinned to the latest released tag at the time of writing.
+leaf = { git = "https://github.com/eycorsican/leaf", tag = "v0.14.2", default-features = true }

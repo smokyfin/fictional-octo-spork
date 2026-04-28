@@ -1,0 +1,18 @@
+[package]
+name = "ff_vpn_jni"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ff_vpn_core = { path = "../core" }
+jni = "0.22"
+tokio = { workspace = true }
+tracing = { workspace = true }
+once_cell = { workspace = true }
+anyhow = { workspace = true }

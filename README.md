@@ -1,1 +1,66 @@
 # fictional-octo-spork
+
+Cross-platform VPN client (Android & iOS first, then desktop) that routes user
+traffic through Tor using a custom Pluggable Transport based on **VLESS +
+Reality + gRPC**.
+
+```text
+  TUN ─► Leaf #1 (TUN→SOCKS5) ─► Arti (Tor with PT) ─► Leaf #2 (SOCKS5→VLESS+Reality+gRPC) ─► Internet
+```
+
+## Layout
+
+| Path | What lives here |
+| --- | --- |
+| `rust/core` | The VPN engine — Leaf+Arti orchestration, DNS proxy, Unix-socket IPC, config parser. Compiled as `staticlib`+`cdylib`. |
+| `rust/jni` | Android JNI shim that delegates to `ff_vpn_core::ffi`. |
+| `flutter_app/lib` | Flutter UI — Cloudflare-WARP-style minimalist UI: connect/disconnect, import (URL/QR/text), country picker, per-app routing, dev/logs tab. |
+| `flutter_app/android` | Android-side Kotlin: `VpnService`, foreground service, `MainActivity`, native bridge. |
+| `flutter_app/ios` | iOS-side Swift: `NEPacketTunnelProvider`, entitlements, Info.plist. |
+| `scripts` | Build helpers for the Rust core targeting Android/iOS. |
+| `docs` | Architecture notes and protocol specs. |
+
+## Strict design rules
+
+- **VPN logic in Rust only.** No Go/Kotlin/Swift implementations of TUN/Tor/VLESS.
+- **Arti `>= 0.41`** — required by spec.
+- **Leaf** pulled via Git tag `v0.14.2` with **default features**.
+- **Random ports + random passwords** for every internal SOCKS endpoint.
+- **Unix-domain IPC sockets** live only inside the application-private directory
+  (`getApplicationDocumentsDirectory()` / iOS app sandbox), with
+  `0600` perms and a per-session auth token.
+- **DNS** is served by an embedded resolver bound to the TUN address; queries
+  are forwarded through Leaf #2 (the VLESS path) to the configured DoH endpoint.
+  If `doh_server_ip` is provided, we pin DNS resolution of the DoH host to
+  that IP so we never round-trip through the OS resolver.
+- **`cancel`/`disconnect`** instantly aborts every background task and tears
+  down every socket — see `Cancel` in `rust/core/src/runtime.rs`.
+- **PT abstraction** (`rust/core/src/pt`) leaves room for swapping Leaf with
+  Lyrebird or Xray-core in the future.
+
+## Configuration
+
+Default upstream URL: `https://incss.ru/vless.conf`. Only the following fields
+are read; everything else (routing rules, inbounds) is ignored by design and
+generated locally from the TUN configuration.
+
+- `bridge_rsa_id`
+- `bridge_ed25519_id`
+- `doh_server`
+- `doh_server_ip` (optional; pins DoH server resolution)
+- The **first** `outbounds` entry whose `protocol` is `vless` (with
+  `reality` security and `grpc` network).
+
+## Building
+
+The Rust core builds as a normal Cargo workspace:
+
+```sh
+cd rust && cargo build --release
+```
+
+For mobile platforms see `scripts/build-android.sh` and `scripts/build-ios.sh`.
+
+The Flutter app is a standard `flutter run` once the native libraries are
+staged — see the platform sections of `flutter_app/android/app/build.gradle.kts`
+and `flutter_app/ios/Podfile`.
