@@ -19,4 +19,8 @@ object VpnEventBus : EventChannel.StreamHandler {
     fun emit(payload: Map<String, Any?>) {
         main.post { sink?.success(payload) }
     }
+
+    fun emitLog(line: String) {
+        emit(mapOf("kind" to "log", "line" to line))
+    }
 }

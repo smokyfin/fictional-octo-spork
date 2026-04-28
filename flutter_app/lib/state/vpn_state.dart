@@ -150,11 +150,14 @@ class VpnController extends StateNotifier<VpnState> {
     // Clear any stale error from a previous attempt so the UI doesn't keep
     // showing it across a successful reconnection.
     state = state.copyWith(status: VpnStatus.connecting, errorMessage: null);
+    appendLog('[ui] connect: country=${state.exitCountry ?? "-"}');
     try {
       final channel = _ref.read(vpnChannelProvider);
       if (!await channel.hasPermission()) {
+        appendLog('[ui] requesting VpnService permission');
         await channel.requestPermission();
       }
+      appendLog('[ui] dispatching connect to platform channel');
       await channel.connect(
         configJson: jsonEncode(cfg.toJson()),
         exitCountry: state.exitCountry,
@@ -173,10 +176,12 @@ class VpnController extends StateNotifier<VpnState> {
 
   Future<void> disconnect() async {
     state = state.copyWith(status: VpnStatus.disconnecting);
+    appendLog('[ui] disconnect requested');
     try {
       await _ref.read(vpnChannelProvider).disconnect();
       state = state.copyWith(status: VpnStatus.disconnected, errorMessage: null);
     } catch (e) {
+      appendLog('[ui] disconnect failed: $e');
       state = state.copyWith(status: VpnStatus.error, errorMessage: e.toString());
     }
   }
@@ -186,6 +191,14 @@ class VpnController extends StateNotifier<VpnState> {
       state = state.copyWith(allowedPackages: pkgs);
   void setDisallowedPackages(List<String>? pkgs) =>
       state = state.copyWith(disallowedPackages: pkgs);
+
+  void clearLogs() => state = state.copyWith(logs: const []);
+
+  void appendLog(String line) {
+    final logs = [...state.logs, line];
+    if (logs.length > 500) logs.removeRange(0, logs.length - 500);
+    state = state.copyWith(logs: logs);
+  }
 
   @override
   void dispose() {
