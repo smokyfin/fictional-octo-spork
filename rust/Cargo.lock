@@ -1504,6 +1504,7 @@ dependencies = [
  "ff_vpn_core",
  "jni 0.22.4",
  "once_cell",
+ "serde_json",
  "tokio",
  "tracing",
 ]
