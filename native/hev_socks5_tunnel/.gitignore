@@ -1,0 +1,5 @@
+# Cloned upstream source + ndk-build outputs.
+jni/
+libs/
+obj/
+*.so

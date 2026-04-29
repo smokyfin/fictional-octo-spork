@@ -34,6 +34,9 @@ pub enum Error {
     #[error("xray runtime is unavailable on this platform")]
     XrayUnavailable,
 
+    #[error("hev-socks5-tunnel runtime is unavailable on this platform")]
+    HevUnavailable,
+
     #[error("dns error: {0}")]
     Dns(String),
 

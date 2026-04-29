@@ -16,6 +16,7 @@ class AppConfig {
     required this.bridgeEd25519Id,
     required this.dohServer,
     required this.dohServerIp,
+    required this.skipArti,
     required this.outbound,
   });
 
@@ -23,6 +24,9 @@ class AppConfig {
   final String bridgeEd25519Id;
   final String dohServer;
   final String? dohServerIp;
+  /// Bypass Arti when true — i.e. route TUN → hev → xray → VLESS.
+  /// The UI can override this via `VpnState.skipArtiOverride`.
+  final bool skipArti;
   final VlessOutbound outbound;
 
   Map<String, dynamic> toJson() => {
@@ -30,6 +34,7 @@ class AppConfig {
         'bridge_ed25519_id': bridgeEd25519Id,
         'doh_server': dohServer,
         'doh_server_ip': dohServerIp,
+        'skip_arti': skipArti,
         'outbound': outbound.toJson(),
       };
 
@@ -45,6 +50,7 @@ class AppConfig {
       bridgeEd25519Id: json['bridge_ed25519_id'] as String,
       dohServer: json['doh_server'] as String,
       dohServerIp: json['doh_server_ip'] as String?,
+      skipArti: (json['skip_arti'] ?? false) as bool,
       outbound: VlessOutbound(
         tag: ob['tag'] as String,
         address: ob['address'] as String,
@@ -94,6 +100,7 @@ class AppConfig {
       bridgeEd25519Id: raw['bridge_ed25519_id'] as String,
       dohServer: raw['doh_server'] as String,
       dohServerIp: raw['doh_server_ip'] as String?,
+      skipArti: (raw['skip_arti'] ?? false) as bool,
       outbound: VlessOutbound(
         tag: (vless['tag'] ?? 'proxy') as String,
         address: vnext['address'] as String,

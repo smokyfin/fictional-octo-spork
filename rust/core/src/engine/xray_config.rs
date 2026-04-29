@@ -1,28 +1,26 @@
 //! Build the JSON configuration consumed by `xray-core` from our typed
 //! [`AppConfig`].
 //!
-//! Xray-core has a *much* richer config schema than our `AppConfig`; we
-//! only emit the slice we actually need:
+//! In the new architecture xray-core is a *transparent* SOCKS5 → VLESS
+//! proxy used as an unmanaged Pluggable Transport for Arti (and, when
+//! `skip_arti=true`, directly by hev-socks5-tunnel). It therefore needs:
 //!
-//! * **inbound** — a single SOCKS5 listener on `127.0.0.1:<dyn>`. The
-//!   tun2socks engine pumps every IP packet that crosses the TUN here.
-//! * **outbound (`proxy`)** — VLESS + Reality + (gRPC | xhttp) speaking to
-//!   the upstream defined in `AppConfig::outbound`.
-//! * **outbound (`direct`)** — needed by the routing table for
-//!   private-IP / loopback traffic.
-//! * **outbound (`block`)** — sinkhole for things that must never leave.
-//! * **routing** — `geoip:private` → `direct`, default → `proxy`.
-//! * **dns** — DoH resolver from `AppConfig::doh_server` (e.g.
-//!   `https://dns.google/dns-query`); fallback to the bundled IP if the
-//!   name itself can't be resolved.
-//!
-//! For the "via Tor" path we expose [`add_arti_chain`] which prepends an
-//! upstream SOCKS5 outbound (pointing at the Arti listener) and rewrites
-//! the `proxy` outbound's chain so the VLESS dial happens over Tor.
+//! * **inbound** — a single SOCKS5 listener on `127.0.0.1:<dyn>`. Every
+//!   CONNECT lands here.
+//! * **outbound (`proxy`)** — VLESS + Reality + (gRPC | xhttp) speaking
+//!   to the upstream defined in `AppConfig::outbound`.
+//! * **outbound (`block`)** — sinkhole for unwanted traffic.
+//! * **outbound (`dns-out`)** — handles intra-tunnel DNS queries via
+//!   xray's own DNS subsystem (DoH).
+//! * **routing** — DNS→`dns-out`, default → `proxy`. We do NOT add a
+//!   `direct` rule for private IPs: when Arti dials its bridge at
+//!   `127.0.0.1:9001` that connection must travel through `proxy`.
+//! * **dns** — DoH resolver from `AppConfig::doh_server` plus the
+//!   optional `doh_server_ip` for direct-IP bootstrap.
 //!
 //! The shape of the produced JSON is intentionally a `serde_json::Value`
 //! tree — Xray-core's parser is forgiving and adding fields incrementally
-//! is much easier than maintaining a typed mirror of the entire schema.
+//! is easier than maintaining a typed mirror of the entire schema.
 
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -30,8 +28,8 @@ use std::net::SocketAddr;
 use crate::config::AppConfig;
 
 /// Build a complete xray-core configuration that exposes a SOCKS5 inbound
-/// at `socks_in` and routes everything except private IPs through the
-/// upstream defined by `cfg`.
+/// at `socks_in` and routes everything (including the bridge dial from
+/// Arti) through a VLESS+Reality outbound to the upstream server.
 pub fn build_direct(cfg: &AppConfig, socks_in: SocketAddr) -> Value {
     let outbound = vless_reality_outbound(cfg);
     json!({
@@ -42,42 +40,6 @@ pub fn build_direct(cfg: &AppConfig, socks_in: SocketAddr) -> Value {
         "inbounds": [socks_inbound(socks_in)],
         "outbounds": [
             outbound,
-            { "tag": "direct", "protocol": "freedom" },
-            { "tag": "block",  "protocol": "blackhole" },
-            { "tag": "dns-out", "protocol": "dns" },
-        ],
-        "routing": routing_block(),
-    })
-}
-
-/// Re-issue the configuration produced by [`build_direct`] but force every
-/// connection from the `proxy` outbound to first traverse the SOCKS5
-/// listener at `arti_socks` (i.e. through Arti / Tor) before reaching the
-/// VLESS server.
-///
-/// We use Xray's `streamSettings.sockopt.dialerProxy` — a per-outbound
-/// override that hands the dial to another *outbound* tag, which we add
-/// here as `arti-socks`.
-pub fn build_via_tor(cfg: &AppConfig, socks_in: SocketAddr, arti_socks: SocketAddr) -> Value {
-    let mut proxy = vless_reality_outbound(cfg);
-    let stream = proxy
-        .get_mut("streamSettings")
-        .expect("vless outbound always carries streamSettings");
-    stream
-        .as_object_mut()
-        .expect("streamSettings is an object")
-        .insert(
-            "sockopt".into(),
-            json!({ "dialerProxy": "arti-socks" }),
-        );
-    json!({
-        "log": { "loglevel": "warning" },
-        "dns": dns_block(cfg),
-        "inbounds": [socks_inbound(socks_in)],
-        "outbounds": [
-            proxy,
-            arti_socks_outbound(arti_socks),
-            { "tag": "direct", "protocol": "freedom" },
             { "tag": "block",  "protocol": "blackhole" },
             { "tag": "dns-out", "protocol": "dns" },
         ],
@@ -144,20 +106,12 @@ fn reality_settings(cfg: &AppConfig) -> Value {
     })
 }
 
-fn arti_socks_outbound(addr: SocketAddr) -> Value {
-    json!({
-        "tag": "arti-socks",
-        "protocol": "socks",
-        "settings": {
-            "servers": [{
-                "address": addr.ip().to_string(),
-                "port": addr.port(),
-            }],
-        },
-    })
-}
-
 fn dns_block(cfg: &AppConfig) -> Value {
+    // The first server is what the DNS-out outbound forwards queries
+    // through (DoH URL). The optional `doh_server_ip` is treated as a
+    // bootstrap A record so xray can resolve the DoH host without
+    // bouncing the lookup back through itself. `localhost` provides a
+    // last-resort fallback for the daemon's own internal lookups.
     let mut servers: Vec<Value> = vec![Value::String(cfg.doh_server.clone())];
     if let Some(ip) = &cfg.doh_server_ip {
         servers.push(Value::String(ip.to_string()));
@@ -170,37 +124,20 @@ fn routing_block() -> Value {
     json!({
         "domainStrategy": "AsIs",
         "rules": [
-            // Catch every DNS query (clients dialling 10.10.0.2:53 or any
-            // UDP/TCP port 53 destination) and resolve it through xray's
-            // built-in DNS subsystem (which honours the `dns.servers` block
-            // — DoH `dns.google` in our config). Without this rule the
-            // queries would be sent verbatim to the unreachable TUN
-            // address and time out.
+            // DNS hijack: any query to UDP/TCP-53 from the SOCKS inbound
+            // is handed to xray's `dns-out` outbound, which uses the
+            // `dns.servers` block (DoH).
             {
                 "type": "field",
                 "inboundTag": ["socks-in"],
                 "port": 53,
                 "outboundTag": "dns-out"
             },
-            // Loopback / RFC1918 / link-local traffic stays on the
-            // device — never tunnelled. We use explicit CIDRs because
-            // xray's `geoip:private` would require shipping `geoip.dat`
-            // alongside the binary, which we don't (yet) do.
-            {
-                "type": "field",
-                "ip": [
-                    "127.0.0.0/8",
-                    "10.0.0.0/8",
-                    "172.16.0.0/12",
-                    "192.168.0.0/16",
-                    "169.254.0.0/16",
-                    "::1/128",
-                    "fc00::/7",
-                    "fe80::/10"
-                ],
-                "outboundTag": "direct"
-            },
-            // Default: everything else goes through proxy.
+            // Default: everything else goes through the VLESS proxy. We
+            // intentionally don't define a `direct` outbound here — when
+            // Arti is using xray as a Pluggable Transport, its bridge
+            // CONNECT to `127.0.0.1:9001` must be tunnelled, not handled
+            // locally.
             { "type": "field", "network": "tcp,udp", "outboundTag": "proxy" },
         ],
     })
@@ -213,8 +150,8 @@ mod tests {
     fn sample_cfg(network: &str) -> AppConfig {
         let json = format!(
             r#"{{
-              "bridge_rsa_id": "x",
-              "bridge_ed25519_id": "y",
+              "bridge_rsa_id": "715213AEA5BBE71AB2E9E1AFEE02D0170206021F",
+              "bridge_ed25519_id": "Rq4fdFNepS2oTFnyNrQon9FDWi46m5OFZKAGVFmMe9I",
               "doh_server": "https://dns.google/dns-query",
               "outbounds": [{{
                 "tag": "proxy", "protocol": "vless",
@@ -258,13 +195,11 @@ mod tests {
         );
         assert_eq!(proxy["streamSettings"]["realitySettings"]["serverName"], "example.com");
         assert_eq!(v["inbounds"][0]["port"], 10808);
-        // First rule is DNS hijack -> dns-out, then private IPs ->
-        // direct, default -> proxy.
+        // First rule is DNS hijack -> dns-out, then default -> proxy.
         assert_eq!(v["routing"]["rules"][0]["outboundTag"], "dns-out");
         assert_eq!(v["routing"]["rules"][0]["port"], 53);
-        assert_eq!(v["routing"]["rules"][1]["outboundTag"], "direct");
-        assert_eq!(v["routing"]["rules"][2]["outboundTag"], "proxy");
-        // dns-out outbound must exist alongside the proxy/direct/block trio.
+        assert_eq!(v["routing"]["rules"][1]["outboundTag"], "proxy");
+        // dns-out outbound must exist alongside the proxy/block trio.
         let tags: Vec<String> = v["outbounds"]
             .as_array()
             .unwrap()
@@ -272,6 +207,11 @@ mod tests {
             .map(|o| o["tag"].as_str().unwrap().to_string())
             .collect();
         assert!(tags.contains(&"dns-out".to_string()));
+        assert!(tags.contains(&"proxy".to_string()));
+        assert!(tags.contains(&"block".to_string()));
+        // Critical: no `direct` outbound — Arti's bridge dial to
+        // 127.0.0.1:9001 must travel through `proxy`.
+        assert!(!tags.contains(&"direct".to_string()));
     }
 
     #[test]
@@ -285,21 +225,17 @@ mod tests {
     }
 
     #[test]
-    fn via_tor_inserts_arti_outbound_and_dialer_proxy() {
-        let cfg = sample_cfg("xhttp");
-        let v = build_via_tor(
-            &cfg,
-            "127.0.0.1:10808".parse().unwrap(),
-            "127.0.0.1:9150".parse().unwrap(),
-        );
-        let proxy = &v["outbounds"][0];
-        assert_eq!(
-            proxy["streamSettings"]["sockopt"]["dialerProxy"],
-            "arti-socks",
-        );
-        let arti = &v["outbounds"][1];
-        assert_eq!(arti["tag"], "arti-socks");
-        assert_eq!(arti["protocol"], "socks");
-        assert_eq!(arti["settings"]["servers"][0]["port"], 9150);
+    fn dns_block_includes_doh_ip_when_present() {
+        let mut cfg = sample_cfg("xhttp");
+        cfg.doh_server_ip = Some("8.8.8.8".parse().unwrap());
+        let v = build_direct(&cfg, "127.0.0.1:10808".parse().unwrap());
+        let servers: Vec<String> = v["dns"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect();
+        assert!(servers.contains(&"https://dns.google/dns-query".to_string()));
+        assert!(servers.contains(&"8.8.8.8".to_string()));
     }
 }

@@ -18,6 +18,11 @@ pub struct AppConfig {
     pub bridge_ed25519_id: String,
     pub doh_server: String,
     pub doh_server_ip: Option<IpAddr>,
+    /// Server-side override: when present in the config, sets the bridge
+    /// "address" passed to Arti. Per the project spec the server's Tor
+    /// ORPort lives at `127.0.0.1:9001`. Defaults to that.
+    #[serde(default)]
+    pub skip_arti: bool,
     pub outbound: VlessOutbound,
 
     /// Optional UI-driven knobs (country picker, per-app routing, etc.).
@@ -40,11 +45,20 @@ pub struct UserPrefs {
     #[serde(default)]
     pub disallowed_packages: Option<Vec<String>>,
 
-    /// Route the VLESS dial through the Arti Tor client. When `false`
-    /// (default) the engine connects to the VLESS server directly; when
-    /// `true` it tunnels the connection through Tor first.
+    /// User-side override of the config-level `skip_arti` flag. When
+    /// `Some(true)` the engine bypasses Arti entirely (TUN → hev → xray);
+    /// when `Some(false)` Arti is forced on; when `None` (default) we
+    /// honour whatever the upstream config said.
     #[serde(default)]
-    pub route_through_tor: bool,
+    pub skip_arti_override: Option<bool>,
+}
+
+impl UserPrefs {
+    /// Resolve the effective `skip_arti` value taking the UI override
+    /// into account.
+    pub fn effective_skip_arti(&self, cfg_default: bool) -> bool {
+        self.skip_arti_override.unwrap_or(cfg_default)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +100,8 @@ struct RawRoot {
     doh_server: String,
     #[serde(default)]
     doh_server_ip: Option<String>,
+    #[serde(default)]
+    skip_arti: bool,
     outbounds: Vec<RawOutbound>,
 }
 
@@ -212,6 +228,7 @@ impl AppConfig {
             bridge_ed25519_id: raw.bridge_ed25519_id,
             doh_server: raw.doh_server,
             doh_server_ip,
+            skip_arti: raw.skip_arti,
             outbound: VlessOutbound {
                 tag: outbound.tag,
                 address: vnext.address,

@@ -1,14 +1,17 @@
 //! Build script for `ff_vpn_jni`.
 //!
-//! On Android we link against the prebuilt `libxray_bridge.so` produced by
-//! `native/xray_bridge/build_android.sh`. The shared object is consumed by
-//! the linker (-L + -lxray_bridge) and lives next to `libff_vpn_jni.so`
-//! inside the APK so the dynamic loader can resolve the dependency at
-//! runtime.
+//! On Android we link against:
+//!   * `libxray_bridge.so` — built by `native/xray_bridge/build_android.sh`
+//!     (Go cgo c-shared blob containing xray-core).
+//!   * `libhev-socks5-tunnel.so` — built by
+//!     `native/hev_socks5_tunnel/build_android.sh` (C library).
 //!
-//! For other targets (host CI, iOS, macOS) we don't link xray at all —
-//! `xray_runtime` falls back to a stub that returns
-//! `Error::XrayUnavailable`.
+//! Both .so files live next to `libff_vpn_jni.so` inside the APK so the
+//! dynamic loader can resolve them at runtime.
+//!
+//! For other targets (host CI, iOS, macOS) we don't link xray/hev at
+//! all — `xray_runtime`/`hev_runtime` fall back to stubs that return
+//! `Error::XrayUnavailable` / `Error::HevUnavailable`.
 
 use std::path::PathBuf;
 
@@ -39,24 +42,34 @@ fn main() {
         .join("flutter_app/android/app/src/main/jniLibs")
         .join(abi);
 
-    let lib_file = lib_dir.join("libxray_bridge.so");
-    if !lib_file.exists() {
-        // `cargo check` and `cargo clippy` don't link, so the missing .so
-        // is fine in CI — emit a warning instead of failing. Real APK
-        // builds (`cargo ndk build` → flutter build) will fail at link
-        // time if the file is genuinely missing, with a clear error
-        // pointing at this build script.
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    println!("cargo:rerun-if-changed={}", lib_dir.display());
+
+    // Link xray Go bridge.
+    let xray_lib = lib_dir.join("libxray_bridge.so");
+    if !xray_lib.exists() {
         println!(
             "cargo:warning=libxray_bridge.so not found at {}; \
              run native/xray_bridge/build_android.sh (ABI={abi}) \
              before linking.",
-            lib_file.display()
+            xray_lib.display()
         );
     }
-
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=xray_bridge");
-    // Ensure the link record uses an unversioned SONAME-less path; the
-    // Android dynamic loader matches on file name only.
-    println!("cargo:rerun-if-changed={}", lib_file.display());
+    println!("cargo:rerun-if-changed={}", xray_lib.display());
+
+    // Link hev-socks5-tunnel C library. The linker name (`-l<name>`)
+    // omits the leading `lib` and the `.so` suffix, so for a file
+    // named `libhev-socks5-tunnel.so` we pass `hev-socks5-tunnel`.
+    let hev_lib = lib_dir.join("libhev-socks5-tunnel.so");
+    if !hev_lib.exists() {
+        println!(
+            "cargo:warning=libhev-socks5-tunnel.so not found at {}; \
+             run native/hev_socks5_tunnel/build_android.sh (ABI={abi}) \
+             before linking.",
+            hev_lib.display()
+        );
+    }
+    println!("cargo:rustc-link-lib=dylib=hev-socks5-tunnel");
+    println!("cargo:rerun-if-changed={}", hev_lib.display());
 }

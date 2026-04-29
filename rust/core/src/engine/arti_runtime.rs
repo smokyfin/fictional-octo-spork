@@ -30,6 +30,17 @@ use crate::error::{Error, Result};
 use crate::runtime::{Cancel, SocksEndpoint};
 
 /// Spawn the whole Arti subsystem and return the join handle.
+///
+/// `pt_socks` is the SOCKS5 endpoint of an *unmanaged* Pluggable Transport
+/// (xray-core's local socks-inbound). When the supplied [`AppConfig`]
+/// carries non-empty bridge identity strings, the engine wires Arti to
+/// reach the server-side Tor ORPort (`127.0.0.1:9001` per project spec)
+/// through that proxy. When the bridge fields are empty, Arti bootstraps
+/// against the public Tor network as a fallback.
+///
+/// `arti_socks` is the SOCKS5 endpoint our local proxy will *expose* to
+/// hev-socks5-tunnel — i.e. where the TUN side hands its CONNECT
+/// requests.
 pub async fn spawn_arti(
     cfg: AppConfig,
     pt_socks: SocksEndpoint,
@@ -134,41 +145,69 @@ fn build_arti_config(
 
     // ---- Bridges ---------------------------------------------------------
     //
-    // The TZ specifies an obfs4 bridge identified by `bridge_rsa_id` +
-    // `bridge_ed25519_id`, reached through a custom VLESS-based Pluggable
-    // Transport (Leaf #2). However the canonical config served by
-    // `incss.ru/vless.conf` does NOT include a bridge address (bridge_addr
-    // / port / certificate) — only the two identity hashes. Without an
-    // address Arti has nowhere to dial; without an obfs4 cert the
-    // handshake won't complete; and the SOCKS5 endpoint Leaf #1 currently
-    // exposes does not actually speak obfs4 (it is a plain SOCKS→direct
-    // proxy).
+    // Arti reaches the server's Tor ORPort (`127.0.0.1:9001` per project
+    // spec) by dialling an *unmanaged* Pluggable Transport — the local
+    // xray-core socks-inbound (`pt_socks`). xray's outbound carries that
+    // SOCKS CONNECT request through a VLESS+Reality tunnel to the VPN
+    // server; the server-side xray-core then hands the bytes to its
+    // local Tor relay. From Arti's perspective the bridge appears to
+    // live at `127.0.0.1:9001`, but the actual bytes flow over Reality.
     //
-    // Until the production config carries a usable bridge endpoint we
-    // wire the engine to bootstrap directly against the Tor network's
-    // public guard list. This isn't appropriate for environments where
-    // raw Tor connections are blocked, but it lets the rest of the chain
-    // (TUN → Leaf #2 → arti SOCKS → Tor → VLESS exit) actually start —
-    // which is what the user is currently blocked on.
-    //
-    // To re-enable bridges:
-    //   * extend `AppConfig::Bridge` with `address`, `port`, `cert` fields,
-    //   * set `proxy_addr` on the obfs4 `TransportConfigBuilder` to a
-    //     SOCKS5 endpoint that genuinely speaks obfs4 (e.g. Leaf #2's new
-    //     SOCKS5 inbound, after wrapping its outbound in the VLESS+Reality
-    //     chain), and
-    //   * push the parsed `BridgeConfigBuilder` here.
-    let _unused = pt_socks; // kept to preserve the public function signature
-    builder
-        .bridges()
-        .enabled(arti_client::config::BoolOrAuto::Explicit(false));
+    // We tag the unmanaged transport `vless-pt` — the name is purely
+    // local; what matters is that both the bridge and the transport
+    // entry agree on it.
+    if !cfg.bridge_rsa_id.is_empty() && !cfg.bridge_ed25519_id.is_empty() {
+        use std::str::FromStr;
+        builder
+            .bridges()
+            .enabled(arti_client::config::BoolOrAuto::Explicit(true));
 
-    if !cfg.bridge_rsa_id.is_empty() {
+        let mut transport = arti_client::config::pt::TransportConfigBuilder::default();
+        transport
+            .protocols(vec![tor_linkspec::PtTransportName::from_str("vless-pt")
+                .map_err(|e| anyhow::anyhow!("PtTransportName: {e}"))?])
+            .proxy_addr(pt_socks.addr);
+        builder.bridges().transports().push(transport);
+
+        let mut bridge = arti_client::config::BridgeConfigBuilder::default();
+        bridge.transport("vless-pt");
+        // Per spec the bridge sits behind xray on the server at
+        // 127.0.0.1:9001. The "address" we hand Arti is what xray will
+        // see in the SOCKS CONNECT request from Arti.
+        let bridge_sock: std::net::SocketAddr = "127.0.0.1:9001"
+            .parse()
+            .map_err(|e| anyhow::anyhow!("bridge addr: {e}"))?;
+        bridge.set_addrs(vec![tor_linkspec::BridgeAddr::new_addr_from_sockaddr(
+            bridge_sock,
+        )]);
+        bridge.set_ids(vec![
+            cfg.bridge_rsa_id
+                .parse()
+                .map_err(|e| anyhow::anyhow!("bridge_rsa_id: {e}"))?,
+            cfg.bridge_ed25519_id
+                .parse()
+                .map_err(|e| anyhow::anyhow!("bridge_ed25519_id: {e}"))?,
+        ]);
+        builder.bridges().bridges().push(bridge);
+
+        info!(
+            transport = "vless-pt",
+            proxy = %pt_socks.addr,
+            bridge = "127.0.0.1:9001",
+            "configured Arti to reach the server bridge via xray-PT"
+        );
+    } else {
+        // Bridge identity not supplied — fall back to direct Tor
+        // bootstrap against the public network. Useful for testing /
+        // dev environments where the VLESS server is reachable but
+        // bridges aren't required.
+        let _ = pt_socks;
+        builder
+            .bridges()
+            .enabled(arti_client::config::BoolOrAuto::Explicit(false));
         warn!(
-            rsa = %cfg.bridge_rsa_id,
-            "bridge identity present in config but bridge address/cert is missing; \
-             starting Tor without bridges. See arti_runtime.rs::build_arti_config \
-             for the wiring required to re-enable bridge mode."
+            "no bridge_rsa_id / bridge_ed25519_id in config — \
+             bootstrapping Arti against the public Tor network"
         );
     }
 

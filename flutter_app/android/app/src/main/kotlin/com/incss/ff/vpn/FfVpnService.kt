@@ -49,7 +49,11 @@ class FfVpnService : VpnService() {
         val exitCountry = intent.getStringExtra(EXTRA_EXIT_COUNTRY)
         val allowed = intent.getStringArrayListExtra(EXTRA_ALLOWED)
         val disallowed = intent.getStringArrayListExtra(EXTRA_DISALLOWED)
-        val routeThroughTor = intent.getBooleanExtra(EXTRA_ROUTE_THROUGH_TOR, false)
+        // skip_arti override coming from the UI toggle. -1 = "no
+        // override" (use whatever the upstream config says), 0/1 =
+        // explicit user choice. We use an int because boolean extras
+        // can't represent the "unset" state.
+        val skipArtiOverride = intent.getIntExtra(EXTRA_SKIP_ARTI_OVERRIDE, -1)
 
         val tunAddr = "10.10.0.2"
         val mtu = 1500
@@ -107,10 +111,15 @@ class FfVpnService : VpnService() {
             if (!exitCountry.isNullOrBlank()) {
                 user.put("exit_country", exitCountry)
             }
-            user.put("route_through_tor", routeThroughTor)
+            if (skipArtiOverride >= 0) {
+                user.put("skip_arti_override", skipArtiOverride != 0)
+            }
             parsed.put("user", user)
             nativeStartCalled = true
-            VpnEventBus.emitLog("[svc] calling NativeBridge.start (exitCountry=${exitCountry ?: "-"}, viaTor=$routeThroughTor)")
+            VpnEventBus.emitLog(
+                "[svc] calling NativeBridge.start " +
+                    "(exitCountry=${exitCountry ?: "-"}, skipArtiOverride=$skipArtiOverride)"
+            )
             val rc = NativeBridge.start(parsed.toString(), privateDir, fd, tunAddr, mtu)
             if (rc != 0) {
                 val err = runCatching { NativeBridge.lastError() }.getOrNull()
@@ -221,7 +230,7 @@ class FfVpnService : VpnService() {
         const val EXTRA_EXIT_COUNTRY = "exit_country"
         const val EXTRA_ALLOWED = "allowed"
         const val EXTRA_DISALLOWED = "disallowed"
-        const val EXTRA_ROUTE_THROUGH_TOR = "route_through_tor"
+        const val EXTRA_SKIP_ARTI_OVERRIDE = "skip_arti_override"
         private const val NOTIF_ID = 0xC0DE
         private const val NOTIF_CHANNEL_ID = "ff_vpn"
         private const val TAG = "FfVpnService"
