@@ -97,11 +97,20 @@ class MainActivity : FlutterActivity() {
         val allowed = args["allowedPackages"] as List<String>?
         @Suppress("UNCHECKED_CAST")
         val disallowed = args["disallowedPackages"] as List<String>?
+        // skip_arti override coming from the Flutter UI. nullable
+        // bool: null = "no override", true/false = explicit choice. We
+        // marshal to int (-1 / 0 / 1) so it survives Intent extras.
+        val skipArtiOverride = when (args["skipArtiOverride"] as Boolean?) {
+            null -> -1
+            true -> 1
+            false -> 0
+        }
 
         val intent = Intent(this, FfVpnService::class.java).apply {
             action = FfVpnService.ACTION_START
             putExtra(FfVpnService.EXTRA_CONFIG, configJson)
             putExtra(FfVpnService.EXTRA_EXIT_COUNTRY, exitCountry)
+            putExtra(FfVpnService.EXTRA_SKIP_ARTI_OVERRIDE, skipArtiOverride)
             putStringArrayListExtra(
                 FfVpnService.EXTRA_ALLOWED, allowed?.let(::ArrayList)
             )

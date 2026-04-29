@@ -41,7 +41,30 @@ class HomeScreen extends ConsumerWidget {
                 label: const Text('Import config'),
                 onPressed: () => context.push('/import'),
               ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 24),
+            // Skip Arti toggle. Pipeline default (off) is
+            //   TUN -> hev -> Arti -> xray-PT -> VLESS -> server
+            // turning it on bypasses Arti:
+            //   TUN -> hev -> xray -> VLESS -> server
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: SwitchListTile(
+                // Three-state UI collapsed to two for now:
+                // null/false → Arti enabled, true → Arti bypass.
+                value: state.skipArtiOverride == true,
+                onChanged: state.status == VpnStatus.disconnected ||
+                        state.status == VpnStatus.error
+                    ? (v) => ctrl.setSkipArtiOverride(v)
+                    : null,
+                title: const Text('Skip Arti'),
+                subtitle: const Text(
+                  'Off: TUN -> hev -> Arti -> xray -> VLESS. '
+                  'On: TUN -> hev -> xray -> VLESS (bypass Tor).',
+                ),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            const SizedBox(height: 16),
             FilledButton.tonal(
               onPressed: state.config == null
                   ? null
@@ -80,9 +103,13 @@ class HomeScreen extends ConsumerWidget {
       case VpnStatus.disconnected:
         return 'Disconnected';
       case VpnStatus.connecting:
-        return 'Negotiating bridge…';
+        return s.skipArtiOverride == true
+            ? 'Starting Xray…'
+            : 'Bootstrapping Arti + Xray…';
       case VpnStatus.connected:
-        return 'Connected via Tor';
+        return s.skipArtiOverride == true
+            ? 'Connected (skip Arti)'
+            : 'Connected via Arti + VLESS';
       case VpnStatus.disconnecting:
         return 'Tearing down…';
       case VpnStatus.error:

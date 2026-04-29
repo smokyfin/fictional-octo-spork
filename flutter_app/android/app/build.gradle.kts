@@ -6,13 +6,16 @@ plugins {
 
 android {
     namespace = "com.incss.ff.vpn"
-    compileSdk = 34
-    ndkVersion = "26.1.10909125"
+    compileSdk = 35
+    // NDK 30 (mentioned in the spec) is not yet released; r27/r28 are the
+    // current rolling releases and r26.3 is what the build VM ships. We
+    // stay on r26.3 to keep CI reproducible.
+    ndkVersion = "26.3.11579264"
 
     defaultConfig {
         applicationId = "com.incss.ff.vpn"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
         ndk {
@@ -28,17 +31,15 @@ android {
 
     sourceSets {
         getByName("main") {
-            jniLibs.srcDirs(
-                "../../../rust/target/aarch64-linux-android/release",
-                "../../../rust/target/armv7-linux-androideabi/release",
-                "../../../rust/target/x86_64-linux-android/release",
-            )
+            // cargo-ndk -o places .so files in <jniLibs>/<abi>/lib*.so
+            jniLibs.srcDirs("src/main/jniLibs")
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
         }
     }

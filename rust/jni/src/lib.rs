@@ -78,7 +78,9 @@ pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_start<'local>(
             Ok(match inner() {
                 Ok(()) => 0,
                 Err(e) => {
-                    tracing::error!(?e, "JNI start failed");
+                    let msg = format!("{e:#}");
+                    tracing::error!(error = %msg, "JNI start failed");
+                    ff_vpn_core::ffi::set_last_err(msg);
                     1
                 }
             })
@@ -126,6 +128,25 @@ pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_ipcAuthToken<'local>(
             .new_string(&t)
             .map(|j| j.into_raw())
             .unwrap_or(std::ptr::null_mut()))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Returns the last Rust-side error message and clears it. Returns null if
+/// no error was recorded since the last poll.
+#[no_mangle]
+pub extern "system" fn Java_com_incss_ff_vpn_NativeBridge_lastError<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    env.with_env(|env| -> JniResult<jstring> {
+        Ok(match ff_vpn_core::ffi::take_last_error_string() {
+            Some(s) => env
+                .new_string(&s)
+                .map(|j| j.into_raw())
+                .unwrap_or(std::ptr::null_mut()),
+            None => std::ptr::null_mut(),
+        })
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }

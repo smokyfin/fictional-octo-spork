@@ -51,20 +51,58 @@ fn current_engine() -> &'static Mutex<Option<Arc<engine::Engine>>> {
 }
 
 /// Initialise logging exactly once. Safe to call from any platform shim.
+///
+/// On Android we route through `tracing-android` so log records reach
+/// `logcat` (the only sink the OS makes available — there is no real
+/// stdout for Android apps). On every other platform we fall back to
+/// the standard `fmt` subscriber.
 pub fn init_logging() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static INIT: AtomicBool = AtomicBool::new(false);
     if INIT.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,leaf=info,arti=info")),
-        )
-        .with_target(false)
-        .try_init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,leaf=info,arti=info"));
+
+    #[cfg(target_os = "android")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let android_layer = tracing_android::layer("ff_vpn").ok();
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(android_layer)
+            .try_init();
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .try_init();
+    }
     info!("ff_vpn_core logging initialised");
+}
+
+/// Install the rustls process-wide `CryptoProvider` (ring) exactly once.
+///
+/// rustls 0.23 stopped picking a default crypto backend automatically: every
+/// `RustlsRuntime` / `ClientConfig` will fail at first use unless one is
+/// installed. We do this here, before any of arti / leaf / reqwest spin up
+/// their own `RustlsRuntime`s, so the Tor handshake (which is gated on TLS
+/// to the directory authorities) actually completes.
+///
+/// `install_default()` returns `Err` if a provider is already installed —
+/// which is fine, we just ignore it so this function is idempotent and safe
+/// to call from multiple platform shims.
+fn install_rustls_crypto_provider() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 /// Start the VPN engine with the given parsed configuration and platform context.
@@ -80,6 +118,7 @@ pub fn init_logging() {
 /// sides try to clean up a descriptor whose number POSIX may have reassigned.
 pub fn start(cfg: config::AppConfig, ctx: engine::PlatformContext) -> Result<engine::EngineHandle> {
     init_logging();
+    install_rustls_crypto_provider();
     // Single fd-ownership point: armed before any fallible step (including
     // the `AlreadyRunning` check) and disarmed only after `Engine::start`
     // has successfully transferred the fd to Leaf #2's TUN inbound.

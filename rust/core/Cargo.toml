@@ -42,6 +42,13 @@ socket2 = { workspace = true }
 
 leaf = { workspace = true }
 
+# rustls 0.23 requires explicit installation of a CryptoProvider before any
+# TLS handshake. We pull in rustls directly (not via re-export) so we can
+# call `install_default()` once at engine start. Default features include
+# `ring`, which matches what arti-client / leaf already depend on
+# transitively (avoids pulling in a second crypto backend).
+rustls = "0.23"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

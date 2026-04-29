@@ -23,10 +23,22 @@ class FfVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        LogTailer.start()
+        VpnEventBus.emitLog("[svc] FfVpnService.onCreate")
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startTunnel(intent)
-            ACTION_STOP -> stopTunnel()
+            ACTION_START -> {
+                VpnEventBus.emitLog("[svc] start command received")
+                startTunnel(intent)
+            }
+            ACTION_STOP -> {
+                VpnEventBus.emitLog("[svc] stop command received")
+                stopTunnel()
+            }
         }
         return START_NOT_STICKY
     }
@@ -37,6 +49,11 @@ class FfVpnService : VpnService() {
         val exitCountry = intent.getStringExtra(EXTRA_EXIT_COUNTRY)
         val allowed = intent.getStringArrayListExtra(EXTRA_ALLOWED)
         val disallowed = intent.getStringArrayListExtra(EXTRA_DISALLOWED)
+        // skip_arti override coming from the UI toggle. -1 = "no
+        // override" (use whatever the upstream config says), 0/1 =
+        // explicit user choice. We use an int because boolean extras
+        // can't represent the "unset" state.
+        val skipArtiOverride = intent.getIntExtra(EXTRA_SKIP_ARTI_OVERRIDE, -1)
 
         val tunAddr = "10.10.0.2"
         val mtu = 1500
@@ -63,7 +80,11 @@ class FfVpnService : VpnService() {
             }
         }
 
-        val pfd = builder.establish() ?: return stopSelfSafely()
+        VpnEventBus.emitLog("[svc] establishing TUN: addr=$tunAddr/24 mtu=$mtu")
+        val pfd = builder.establish() ?: run {
+            VpnEventBus.emitLog("[svc] TUN.establish() returned null (permission denied?)")
+            return stopSelfSafely()
+        }
         tun = pfd
 
         val privateDir = filesDir.absolutePath
@@ -78,29 +99,43 @@ class FfVpnService : VpnService() {
         //     fd and we MUST close it here. The `nativeStartCalled` flag
         //     distinguishes the two cases.
         val fd = pfd.detachFd()
+        VpnEventBus.emitLog("[svc] TUN fd detached: $fd, private dir: $privateDir")
         var nativeStartCalled = false
         try {
             NativeBridge.init()
+            VpnEventBus.emitLog("[svc] NativeBridge.init() ok")
             val parsed = JSONObject(configJson)
-            // Inject the user-selected Tor exit country into the config blob
-            // under `user.exit_country` — the Rust `AppConfig::user::exit_country`
-            // field is what `arti_runtime.rs` reads when applying StreamPrefs.
-            // Without this the country picker would silently no-op.
+            // Inject UI-driven user preferences into the config blob under
+            // `user.*`. Rust's `AppConfig::user` is what the engine reads.
+            val user = parsed.optJSONObject("user") ?: JSONObject()
             if (!exitCountry.isNullOrBlank()) {
-                val user = parsed.optJSONObject("user") ?: JSONObject()
                 user.put("exit_country", exitCountry)
-                parsed.put("user", user)
             }
+            if (skipArtiOverride >= 0) {
+                user.put("skip_arti_override", skipArtiOverride != 0)
+            }
+            parsed.put("user", user)
             nativeStartCalled = true
+            VpnEventBus.emitLog(
+                "[svc] calling NativeBridge.start " +
+                    "(exitCountry=${exitCountry ?: "-"}, skipArtiOverride=$skipArtiOverride)"
+            )
             val rc = NativeBridge.start(parsed.toString(), privateDir, fd, tunAddr, mtu)
             if (rc != 0) {
-                Log.e(TAG, "NativeBridge.start returned $rc")
+                val err = runCatching { NativeBridge.lastError() }.getOrNull()
+                Log.e(TAG, "NativeBridge.start returned $rc: ${err ?: "(no error string)"}")
+                VpnEventBus.emitLog("[svc] NativeBridge.start rc=$rc: ${err ?: "(no error)"}")
+                if (err != null) {
+                    VpnEventBus.emit(mapOf("kind" to "error", "message" to err))
+                }
                 stopTunnel()
             } else {
+                VpnEventBus.emitLog("[svc] NativeBridge.start ok; tunnel up")
                 VpnEventBus.emit(mapOf("kind" to "status", "running" to true))
             }
         } catch (t: Throwable) {
             Log.e(TAG, "startTunnel failed", t)
+            VpnEventBus.emitLog("[svc] startTunnel failed: ${t.javaClass.simpleName}: ${t.message}")
             VpnEventBus.emit(mapOf("kind" to "error", "message" to (t.message ?: "start failed")))
             if (!nativeStartCalled) closeRawFd(fd)
             stopTunnel()
@@ -166,7 +201,7 @@ class FfVpnService : VpnService() {
         val notif: Notification = Notification.Builder(this, NOTIF_CHANNEL_ID)
             .setContentTitle("ff-vpn")
             .setContentText("Routing through Tor + VLESS")
-            .setSmallIcon(android.R.drawable.stat_sys_vpn_ic)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
@@ -183,6 +218,8 @@ class FfVpnService : VpnService() {
 
     override fun onDestroy() {
         stopTunnel()
+        VpnEventBus.emitLog("[svc] FfVpnService.onDestroy")
+        LogTailer.stop()
         super.onDestroy()
     }
 
@@ -193,6 +230,7 @@ class FfVpnService : VpnService() {
         const val EXTRA_EXIT_COUNTRY = "exit_country"
         const val EXTRA_ALLOWED = "allowed"
         const val EXTRA_DISALLOWED = "disallowed"
+        const val EXTRA_SKIP_ARTI_OVERRIDE = "skip_arti_override"
         private const val NOTIF_ID = 0xC0DE
         private const val NOTIF_CHANNEL_ID = "ff_vpn"
         private const val TAG = "FfVpnService"

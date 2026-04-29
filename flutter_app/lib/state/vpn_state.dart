@@ -23,6 +23,7 @@ class VpnState {
     this.exitCountry,
     this.allowedPackages,
     this.disallowedPackages,
+    this.skipArtiOverride,
     this.errorMessage,
     this.lastStatusJson,
     this.logs = const [],
@@ -33,6 +34,9 @@ class VpnState {
   final String? exitCountry;
   final List<String>? allowedPackages;
   final List<String>? disallowedPackages;
+  /// UI override of the upstream config's `skip_arti` flag.
+  /// `null` honours the config; `true` bypasses Arti; `false` forces it on.
+  final bool? skipArtiOverride;
   final String? errorMessage;
   final Map<String, dynamic>? lastStatusJson;
   final List<String> logs;
@@ -43,6 +47,7 @@ class VpnState {
     Object? exitCountry = _unset,
     Object? allowedPackages = _unset,
     Object? disallowedPackages = _unset,
+    Object? skipArtiOverride = _unset,
     Object? errorMessage = _unset,
     Object? lastStatusJson = _unset,
     List<String>? logs,
@@ -59,6 +64,9 @@ class VpnState {
         disallowedPackages: identical(disallowedPackages, _unset)
             ? this.disallowedPackages
             : disallowedPackages as List<String>?,
+        skipArtiOverride: identical(skipArtiOverride, _unset)
+            ? this.skipArtiOverride
+            : skipArtiOverride as bool?,
         errorMessage: identical(errorMessage, _unset)
             ? this.errorMessage
             : errorMessage as String?,
@@ -150,16 +158,20 @@ class VpnController extends StateNotifier<VpnState> {
     // Clear any stale error from a previous attempt so the UI doesn't keep
     // showing it across a successful reconnection.
     state = state.copyWith(status: VpnStatus.connecting, errorMessage: null);
+    appendLog('[ui] connect: country=${state.exitCountry ?? "-"}');
     try {
       final channel = _ref.read(vpnChannelProvider);
       if (!await channel.hasPermission()) {
+        appendLog('[ui] requesting VpnService permission');
         await channel.requestPermission();
       }
+      appendLog('[ui] dispatching connect to platform channel');
       await channel.connect(
         configJson: jsonEncode(cfg.toJson()),
         exitCountry: state.exitCountry,
         allowedPackages: state.allowedPackages,
         disallowedPackages: state.disallowedPackages,
+        skipArtiOverride: state.skipArtiOverride,
       );
       // Stay in `connecting` — the platform method is fire-and-forget on
       // Android (startForegroundService returns before the Rust engine has
@@ -173,10 +185,12 @@ class VpnController extends StateNotifier<VpnState> {
 
   Future<void> disconnect() async {
     state = state.copyWith(status: VpnStatus.disconnecting);
+    appendLog('[ui] disconnect requested');
     try {
       await _ref.read(vpnChannelProvider).disconnect();
       state = state.copyWith(status: VpnStatus.disconnected, errorMessage: null);
     } catch (e) {
+      appendLog('[ui] disconnect failed: $e');
       state = state.copyWith(status: VpnStatus.error, errorMessage: e.toString());
     }
   }
@@ -186,6 +200,18 @@ class VpnController extends StateNotifier<VpnState> {
       state = state.copyWith(allowedPackages: pkgs);
   void setDisallowedPackages(List<String>? pkgs) =>
       state = state.copyWith(disallowedPackages: pkgs);
+  /// Set / clear the user's `skip_arti` override. Pass `null` to revert
+  /// to whatever the upstream config specified.
+  void setSkipArtiOverride(bool? value) =>
+      state = state.copyWith(skipArtiOverride: value);
+
+  void clearLogs() => state = state.copyWith(logs: const []);
+
+  void appendLog(String line) {
+    final logs = [...state.logs, line];
+    if (logs.length > 500) logs.removeRange(0, logs.length - 500);
+    state = state.copyWith(logs: logs);
+  }
 
   @override
   void dispose() {

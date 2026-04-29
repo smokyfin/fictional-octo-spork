@@ -16,6 +16,7 @@ class AppConfig {
     required this.bridgeEd25519Id,
     required this.dohServer,
     required this.dohServerIp,
+    required this.skipArti,
     required this.outbound,
   });
 
@@ -23,6 +24,9 @@ class AppConfig {
   final String bridgeEd25519Id;
   final String dohServer;
   final String? dohServerIp;
+  /// Bypass Arti when true — i.e. route TUN → hev → xray → VLESS.
+  /// The UI can override this via `VpnState.skipArtiOverride`.
+  final bool skipArti;
   final VlessOutbound outbound;
 
   Map<String, dynamic> toJson() => {
@@ -30,6 +34,7 @@ class AppConfig {
         'bridge_ed25519_id': bridgeEd25519Id,
         'doh_server': dohServer,
         'doh_server_ip': dohServerIp,
+        'skip_arti': skipArti,
         'outbound': outbound.toJson(),
       };
 
@@ -45,13 +50,17 @@ class AppConfig {
       bridgeEd25519Id: json['bridge_ed25519_id'] as String,
       dohServer: json['doh_server'] as String,
       dohServerIp: json['doh_server_ip'] as String?,
+      skipArti: (json['skip_arti'] ?? false) as bool,
       outbound: VlessOutbound(
         tag: ob['tag'] as String,
         address: ob['address'] as String,
         port: ob['port'] as int,
         userId: ob['user_id'] as String,
         flow: (ob['flow'] ?? '') as String,
-        grpcServiceName: ob['grpc_service_name'] as String,
+        // Older persisted configs predate the `network` field — default to
+        // grpc to keep them parseable.
+        network: (ob['network'] ?? 'grpc') as String,
+        grpcServiceName: (ob['grpc_service_name'] ?? '') as String,
         reality: RealitySettings(
           serverName: reality['server_name'] as String,
           publicKey: reality['public_key'] as String,
@@ -73,10 +82,16 @@ class AppConfig {
     if ((stream['security'] as String).toLowerCase() != 'reality') {
       throw const FormatException('only reality is supported');
     }
-    if ((stream['network'] as String).toLowerCase() != 'grpc') {
-      throw const FormatException('only grpc network is supported');
+    final network = (stream['network'] as String).toLowerCase();
+    if (network != 'grpc' && network != 'xhttp') {
+      throw FormatException(
+        'only grpc/xhttp networks are supported (got $network)',
+      );
     }
-    final grpc = stream['grpcSettings'] as Map<String, dynamic>;
+    // gRPC carries `serviceName`; xhttp has no analogous identifier.
+    final grpcServiceName = network == 'grpc'
+        ? (stream['grpcSettings'] as Map<String, dynamic>)['serviceName'] as String
+        : '';
     final reality = stream['realitySettings'] as Map<String, dynamic>;
     final vnext = (vless['settings']['vnext'] as List).first as Map<String, dynamic>;
     final user = (vnext['users'] as List).first as Map<String, dynamic>;
@@ -85,13 +100,15 @@ class AppConfig {
       bridgeEd25519Id: raw['bridge_ed25519_id'] as String,
       dohServer: raw['doh_server'] as String,
       dohServerIp: raw['doh_server_ip'] as String?,
+      skipArti: (raw['skip_arti'] ?? false) as bool,
       outbound: VlessOutbound(
         tag: (vless['tag'] ?? 'proxy') as String,
         address: vnext['address'] as String,
         port: vnext['port'] as int,
         userId: user['id'] as String,
         flow: (user['flow'] ?? '') as String,
-        grpcServiceName: grpc['serviceName'] as String,
+        network: network,
+        grpcServiceName: grpcServiceName,
         reality: RealitySettings(
           serverName: reality['serverName'] as String,
           publicKey: reality['publicKey'] as String,
@@ -110,6 +127,7 @@ class VlessOutbound {
     required this.port,
     required this.userId,
     required this.flow,
+    required this.network,
     required this.grpcServiceName,
     required this.reality,
   });
@@ -119,6 +137,9 @@ class VlessOutbound {
   final int port;
   final String userId;
   final String flow;
+  /// VLESS stream transport: `grpc` or `xhttp`.
+  final String network;
+  /// Empty string when [network] is `xhttp`.
   final String grpcServiceName;
   final RealitySettings reality;
 
@@ -128,6 +149,7 @@ class VlessOutbound {
         'port': port,
         'user_id': userId,
         'flow': flow,
+        'network': network,
         'grpc_service_name': grpcServiceName,
         'reality': reality.toJson(),
       };

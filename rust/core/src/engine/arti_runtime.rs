@@ -17,7 +17,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::Context as _;
 use arti_client::{TorClient, TorClientConfig};
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,6 +30,17 @@ use crate::error::{Error, Result};
 use crate::runtime::{Cancel, SocksEndpoint};
 
 /// Spawn the whole Arti subsystem and return the join handle.
+///
+/// `pt_socks` is the SOCKS5 endpoint of an *unmanaged* Pluggable Transport
+/// (xray-core's local socks-inbound). When the supplied [`AppConfig`]
+/// carries non-empty bridge identity strings, the engine wires Arti to
+/// reach the server-side Tor ORPort (`127.0.0.1:9001` per project spec)
+/// through that proxy. When the bridge fields are empty, Arti bootstraps
+/// against the public Tor network as a fallback.
+///
+/// `arti_socks` is the SOCKS5 endpoint our local proxy will *expose* to
+/// hev-socks5-tunnel — i.e. where the TUN side hands its CONNECT
+/// requests.
 pub async fn spawn_arti(
     cfg: AppConfig,
     pt_socks: SocksEndpoint,
@@ -134,32 +144,72 @@ fn build_arti_config(
         ));
 
     // ---- Bridges ---------------------------------------------------------
-    // Format: `Bridge obfs4 <addr>:<port> <RSA-id> ed25519:<ed25519-id>`
-    // We point the bridge at a sentinel address; the *unmanaged* obfs4
-    // transport below carries the real connection.
-    let bridge_line = format!(
-        "Bridge obfs4 0.0.0.0:1 {rsa} ed25519:{ed}",
-        rsa = cfg.bridge_rsa_id,
-        ed = cfg.bridge_ed25519_id,
-    );
-    let bridge: arti_client::config::BridgeConfigBuilder = bridge_line
-        .parse()
-        .with_context(|| format!("invalid bridge line: {bridge_line:?}"))?;
-    builder.bridges().bridges().push(bridge);
+    //
+    // Arti reaches the server's Tor ORPort (`127.0.0.1:9001` per project
+    // spec) by dialling an *unmanaged* Pluggable Transport — the local
+    // xray-core socks-inbound (`pt_socks`). xray's outbound carries that
+    // SOCKS CONNECT request through a VLESS+Reality tunnel to the VPN
+    // server; the server-side xray-core then hands the bytes to its
+    // local Tor relay. From Arti's perspective the bridge appears to
+    // live at `127.0.0.1:9001`, but the actual bytes flow over Reality.
+    //
+    // We tag the unmanaged transport `vless-pt` — the name is purely
+    // local; what matters is that both the bridge and the transport
+    // entry agree on it.
+    if !cfg.bridge_rsa_id.is_empty() && !cfg.bridge_ed25519_id.is_empty() {
+        use std::str::FromStr;
+        builder
+            .bridges()
+            .enabled(arti_client::config::BoolOrAuto::Explicit(true));
 
-    // ---- Pluggable Transport (unmanaged, SOCKS5) ------------------------
-    // `proxy_addr` is the SOCKS5 endpoint Leaf #1 is listening on.
-    {
         let mut transport = arti_client::config::pt::TransportConfigBuilder::default();
-        let proto: tor_linkspec::PtTransportName = "obfs4".parse()?;
-        transport.protocols(vec![proto]);
-        transport.proxy_addr(pt_socks.addr);
+        transport
+            .protocols(vec![tor_linkspec::PtTransportName::from_str("vless-pt")
+                .map_err(|e| anyhow::anyhow!("PtTransportName: {e}"))?])
+            .proxy_addr(pt_socks.addr);
         builder.bridges().transports().push(transport);
-    }
 
-    builder
-        .bridges()
-        .enabled(arti_client::config::BoolOrAuto::Explicit(true));
+        let mut bridge = arti_client::config::BridgeConfigBuilder::default();
+        bridge.transport("vless-pt");
+        // Per spec the bridge sits behind xray on the server at
+        // 127.0.0.1:9001. The "address" we hand Arti is what xray will
+        // see in the SOCKS CONNECT request from Arti.
+        let bridge_sock: std::net::SocketAddr = "127.0.0.1:9001"
+            .parse()
+            .map_err(|e| anyhow::anyhow!("bridge addr: {e}"))?;
+        bridge.set_addrs(vec![tor_linkspec::BridgeAddr::new_addr_from_sockaddr(
+            bridge_sock,
+        )]);
+        bridge.set_ids(vec![
+            cfg.bridge_rsa_id
+                .parse()
+                .map_err(|e| anyhow::anyhow!("bridge_rsa_id: {e}"))?,
+            cfg.bridge_ed25519_id
+                .parse()
+                .map_err(|e| anyhow::anyhow!("bridge_ed25519_id: {e}"))?,
+        ]);
+        builder.bridges().bridges().push(bridge);
+
+        info!(
+            transport = "vless-pt",
+            proxy = %pt_socks.addr,
+            bridge = "127.0.0.1:9001",
+            "configured Arti to reach the server bridge via xray-PT"
+        );
+    } else {
+        // Bridge identity not supplied — fall back to direct Tor
+        // bootstrap against the public network. Useful for testing /
+        // dev environments where the VLESS server is reachable but
+        // bridges aren't required.
+        let _ = pt_socks;
+        builder
+            .bridges()
+            .enabled(arti_client::config::BoolOrAuto::Explicit(false));
+        warn!(
+            "no bridge_rsa_id / bridge_ed25519_id in config — \
+             bootstrapping Arti against the public Tor network"
+        );
+    }
 
     Ok(builder.build()?)
 }
@@ -206,7 +256,12 @@ async fn handle_socks_conn(
     Ok(())
 }
 
-/// Read the SOCKS5 method-selection message and answer with `username/password`.
+/// Read the SOCKS5 method-selection message and answer either with the
+/// no-auth method (if the client offered it) or with `username/password`.
+///
+/// Xray-core's SOCKS outbound dials no-auth by default, while Leaf's SOCKS
+/// outbound (back when we used it) dialed user/pass. We accept either so
+/// the same Arti listener can serve both.
 async fn socks5_handshake(sock: &mut TcpStream, auth: &(String, String)) -> Result<()> {
     let mut header = [0u8; 2];
     sock.read_exact(&mut header).await.map_err(Error::from)?;
@@ -217,10 +272,19 @@ async fn socks5_handshake(sock: &mut TcpStream, auth: &(String, String)) -> Resu
     let mut methods = vec![0u8; nmethods];
     sock.read_exact(&mut methods).await.map_err(Error::from)?;
 
+    if methods.contains(&0x00) {
+        // Accept no-auth and skip the username/password subnegotiation
+        // entirely. Used by Xray's `socks` outbound.
+        sock.write_all(&[0x05, 0x00]).await.map_err(Error::from)?;
+        let _ = auth;
+        return Ok(());
+    }
     if !methods.contains(&0x02) {
-        // Reject — we require user/pass.
+        // Neither no-auth nor user/pass — reject the connection.
         sock.write_all(&[0x05, 0xff]).await.map_err(Error::from)?;
-        return Err(Error::Other("client refused user/pass auth".into()));
+        return Err(Error::Other(
+            "client offered no acceptable SOCKS5 method".into(),
+        ));
     }
     sock.write_all(&[0x05, 0x02]).await.map_err(Error::from)?;
 

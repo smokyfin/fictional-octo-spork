@@ -17,33 +17,52 @@ use crate::runtime::{Cancel, SocksEndpoint};
 use hickory_proto::op::{Message, MessageType, ResponseCode};
 // hickory-proto 0.26 exposes `Message` header data via the public `metadata`
 // field rather than getter/setter methods.
-use std::net::{IpAddr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
-const DNS_PORT: u16 = 53;
 const MAX_UDP_DNS: usize = 4096;
 
+/// A handle to the embedded DNS proxy, plus the high port it is bound on.
+pub struct DnsProxy {
+    pub task: JoinHandle<()>,
+    pub bound_port: u16,
+}
+
+/// Spawns the embedded DNS proxy on `127.0.0.1:0` (i.e. an OS-assigned high
+/// port on the loopback interface).
+///
+/// Why not the TUN address on UDP/53? Android sandbox forbids unprivileged
+/// UIDs from binding to ports < 1024 *anywhere*, including on the TUN
+/// virtual interface. We work around this by binding on a high loopback port
+/// and configuring Leaf #2's router to DNAT all UDP/53 traffic from TUN to
+/// `127.0.0.1:<bound_port>` via a `redirect` outbound (see
+/// `engine/leaf_config.rs::main_engine_config`).
 pub async fn spawn_dns_proxy(
     cfg: AppConfig,
-    tun_addr: IpAddr,
     arti_socks: SocksEndpoint,
     cancel: Cancel,
-) -> Result<JoinHandle<()>> {
-    let bind: SocketAddr = (tun_addr, DNS_PORT).into();
+) -> Result<DnsProxy> {
+    let bind: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
     let socket = UdpSocket::bind(bind)
         .await
         .map_err(|e| Error::Dns(format!("bind {bind}: {e}")))?;
+    let bound_port = socket
+        .local_addr()
+        .map_err(|e| Error::Dns(format!("local_addr: {e}")))?
+        .port();
+    info!(port = bound_port, "embedded DNS proxy bound on 127.0.0.1");
     let socket = Arc::new(socket);
     let client = build_doh_client(&cfg, &arti_socks)?;
 
-    Ok(tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         if let Err(e) = run(socket, client, cfg.doh_server.clone(), cancel.clone()).await {
             error!(?e, "DNS proxy exited with error");
         }
-    }))
+    });
+    Ok(DnsProxy { task, bound_port })
 }
 
 async fn run(

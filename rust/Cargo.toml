@@ -32,7 +32,7 @@ base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2"] }
 
 # Tor (Arti) — must be >= 0.41. We use arti-client directly (no CLI binary).
-arti-client = { version = "0.41", default-features = false, features = ["tokio", "rustls", "bridge-client", "pt-client", "geoip"] }
+arti-client = { version = "0.41", default-features = false, features = ["tokio", "rustls", "bridge-client", "pt-client", "geoip", "static-sqlite"] }
 tor-rtcompat = { version = "0.41", default-features = false, features = ["tokio", "rustls"] }
 tor-linkspec = "0.41"
 tor-geoip = "0.41"

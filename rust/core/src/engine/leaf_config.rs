@@ -5,13 +5,16 @@
 //! The schema we emit here is what `leaf::config::json::from_string` will
 //! consume.
 //!
-//! NOTE on gRPC: leaf v0.14.2 ships TLS / Reality / WebSocket / QUIC /
-//! AMux transports out of the box, but does **not** expose a stand-alone
-//! `grpc` outbound. The `grpc_service_name` we keep in `AppConfig` is still
-//! parsed and persisted so that, when leaf gains gRPC (or when we swap
-//! the PT provider for Xray-core), we already have it. Today we wire
-//! VLESS-over-Reality (Reality is the transport, VLESS is the payload)
-//! through leaf's standard `chain` actor.
+//! NOTE on stream transports: leaf v0.14.2 ships TLS / Reality / WebSocket
+//! / QUIC / AMux transports out of the box, but does **not** expose a
+//! stand-alone `grpc` or `xhttp` (Xray) outbound. The `network` and
+//! `grpc_service_name` we keep in `AppConfig` are parsed and persisted so
+//! that, when leaf gains them (or when we swap the proxy engine for
+//! Xray-core), we already have them. Today we wire VLESS-over-Reality
+//! (Reality is the transport, VLESS is the payload) through leaf's
+//! standard `chain` actor — neither gRPC nor xhttp framing is added on
+//! top, which matches what we have on the server when reachable directly
+//! over Reality + VLESS.
 
 use crate::config::AppConfig;
 use crate::engine::PlatformContext;
@@ -36,7 +39,21 @@ fn fresh_runtime_id() -> u16 {
 /// the bridge handshake itself rides over Arti's transport plugin.
 pub fn pt_socks_inbound_config(socks: &SocksEndpoint) -> Result<String> {
     let cfg = json!({
-        "log": { "level": "info" },
+        // Disable leaf's own logger setup. We've already installed a global
+        // tracing-subscriber (with a tracing-android layer on Android) in
+        // `ff_vpn_core::init_logging`, and leaf's `setup_logger` calls
+        // `tracing_subscriber::registry()...init()` unconditionally on the
+        // first start, which panics with "a global default subscriber has
+        // already been set". The panic poisons leaf's internal HANDLE
+        // RwLock, so the second `leaf::start` panics on PoisonError —
+        // exactly the cascade we observed.
+        //
+        // With level=none, leaf's `setup_logger` early-returns before
+        // touching the global subscriber. Leaf's own `tracing::*!` calls
+        // still flow through our subscriber thanks to the shared registry,
+        // so we keep visibility — see the EnvFilter directives
+        // `leaf=info,arti=info` in init_logging.
+        "log": { "level": "none" },
         "inbounds": [{
             "tag": "socks-pt",
             "protocol": "socks",
@@ -66,11 +83,14 @@ pub fn main_engine_config(
     cfg: &AppConfig,
     ctx: &PlatformContext,
     arti_socks: &SocksEndpoint,
+    dns_port: u16,
 ) -> Result<String> {
     let reality = &cfg.outbound.reality;
 
     let leaf_cfg = json!({
-        "log": { "level": "info" },
+        // See the comment in `pt_socks_inbound_config` for why this is
+        // "none" rather than "info".
+        "log": { "level": "none" },
         "inbounds": [
             {
                 "tag": "tun-in",
@@ -132,13 +152,29 @@ pub fn main_engine_config(
                 }
             },
             { "tag": "direct", "protocol": "direct" },
-            { "tag": "drop",   "protocol": "drop"   }
+            { "tag": "drop",   "protocol": "drop"   },
+            // DNAT-redirect outbound for DNS. Any UDP/53 traffic that the
+            // router targets here will have its destination rewritten to
+            // `127.0.0.1:<dns_port>`, where our embedded DoH-bridging UDP
+            // server is listening. We can't bind UDP/53 directly because
+            // Android sandbox forbids unprivileged UIDs from binding
+            // privileged ports — even on the TUN virtual interface.
+            {
+                "tag": "dns-redir",
+                "protocol": "redirect",
+                "settings": {
+                    "address": "127.0.0.1",
+                    "port": dns_port
+                }
+            }
         ],
-        // Send everything to the proxy chain. Per-app filtering is handled at
-        // the OS level (Android `addAllowedApplication`/`addDisallowedApplication`);
+        // Routing: hijack UDP/53 first, then send everything else to the
+        // proxy chain. Per-app filtering is handled at the OS level
+        // (Android `addAllowedApplication`/`addDisallowedApplication`);
         // on iOS the Network Extension defines include/exclude routes.
         "router": {
             "rules": [
+                { "network": ["udp"], "portRange": ["53-53"], "target": "dns-redir" },
                 { "ip": ["0.0.0.0/0", "::/0"], "target": "proxy" }
             ]
         }

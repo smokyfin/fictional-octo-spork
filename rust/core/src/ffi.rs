@@ -10,27 +10,32 @@ use crate::util::FdGuard;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 
-// Last error message, in thread-local storage. NUL-terminated UTF-8.
-thread_local! {
-    static LAST_ERR: std::cell::RefCell<Option<CString>> =
-        const { std::cell::RefCell::new(None) };
+// Last error message. Stored in a global Mutex (not a thread_local) because
+// the JNI side runs on the Android binder thread pool — successive calls
+// (`start` then `lastError`) are not guaranteed to land on the same thread.
+static LAST_ERR: parking_lot::Mutex<Option<CString>> = parking_lot::Mutex::new(None);
+
+pub fn set_last_err(msg: impl Into<String>) {
+    *LAST_ERR.lock() = CString::new(msg.into()).ok();
 }
 
-fn set_last_err(msg: impl Into<String>) {
-    LAST_ERR.with(|cell| {
-        *cell.borrow_mut() = CString::new(msg.into()).ok();
-    });
+pub fn take_last_error_string() -> Option<String> {
+    LAST_ERR
+        .lock()
+        .take()
+        .and_then(|c| c.into_string().ok())
 }
 
-/// Returns a borrowed pointer to the last error string set on this thread,
-/// or NULL if there is none. The pointer is valid until the next FFI call on
-/// the same thread.
+/// Returns a freshly-allocated NUL-terminated copy of the last error string,
+/// or NULL if none. Caller must free with `ff_vpn_free_string`. Safe to call
+/// from any thread.
 #[no_mangle]
-pub extern "C" fn ff_vpn_last_error() -> *const c_char {
-    LAST_ERR.with(|cell| match &*cell.borrow() {
-        Some(s) => s.as_ptr(),
-        None => std::ptr::null(),
-    })
+pub extern "C" fn ff_vpn_last_error() -> *mut c_char {
+    let mut slot = LAST_ERR.lock();
+    match slot.take() {
+        Some(s) => s.into_raw(),
+        None => std::ptr::null_mut(),
+    }
 }
 
 /// Initialise platform logging. Idempotent.

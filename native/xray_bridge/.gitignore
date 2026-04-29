@@ -1,0 +1,5 @@
+# Build outputs from go build -buildmode=c-shared. The .so is copied
+# directly into flutter_app/android/app/src/main/jniLibs/<abi>/, but if a
+# developer runs `go build` here directly we don't want stray binaries.
+*.so
+*.h

@@ -77,11 +77,36 @@ void main() {
       expect(() => AppConfig.parse(jsonEncode(bad)), throwsFormatException);
     });
 
-    test('rejects non-grpc network', () {
+    test('rejects networks other than grpc / xhttp', () {
       final bad = jsonDecode(_validUpstreamConfig) as Map<String, dynamic>;
       ((bad['outbounds'] as List).first as Map<String, dynamic>)['streamSettings']
           ['network'] = 'tcp';
       expect(() => AppConfig.parse(jsonEncode(bad)), throwsFormatException);
+    });
+
+    test('parses xhttp config without grpcSettings', () {
+      const xhttpConfig = '''
+      {
+        "bridge_rsa_id": "9A5E28708880EB92217A937F56D640D23551F886",
+        "bridge_ed25519_id": "1Vvw08iKSZVW9ghoiYBWl7qR30d5DNJu0c7EFp0XFZ4",
+        "doh_server": "https://dns.google/dns-query",
+        "outbounds": [{
+          "tag": "proxy",
+          "protocol": "vless",
+          "settings": {"vnext":[{"address":"144.31.184.170","port":8090,
+            "users":[{"id":"3701ba53-4573-466c-a474-f37923ce5bd1","encryption":"none","flow":""}]}]},
+          "streamSettings": {"network":"xhttp",
+            "security":"reality","realitySettings":{"serverName":"ads.x5.ru",
+              "publicKey":"94T5KqTcnBNXDmlobpF7rmsYmPt6vqB_dWQcIi9XjAI",
+              "shortId":"6b2f4e6ac9b1d2f0","fingerprint":"qq"}}
+        }]
+      }
+      ''';
+      final cfg = AppConfig.parse(xhttpConfig);
+      expect(cfg.outbound.network, 'xhttp');
+      expect(cfg.outbound.grpcServiceName, '');
+      expect(cfg.outbound.address, '144.31.184.170');
+      expect(cfg.outbound.reality.serverName, 'ads.x5.ru');
     });
 
     test('rejects when no vless outbound exists', () {
@@ -113,6 +138,7 @@ void main() {
       expect(round.outbound.address, original.outbound.address);
       expect(round.outbound.port, original.outbound.port);
       expect(round.outbound.userId, original.outbound.userId);
+      expect(round.outbound.network, original.outbound.network);
       expect(round.outbound.grpcServiceName, original.outbound.grpcServiceName);
 
       expect(round.outbound.reality.serverName, original.outbound.reality.serverName);

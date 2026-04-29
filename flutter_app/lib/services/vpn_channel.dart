@@ -19,17 +19,24 @@ class VpnChannel {
   Future<bool> hasPermission() async =>
       (await _ch.invokeMethod<bool>('hasPermission')) ?? false;
 
+  /// Bring the tunnel up.
+  ///
+  /// `skipArtiOverride` lets the UI override the upstream config's
+  /// `skip_arti` flag: `null` → use whatever the config says,
+  /// `true` → bypass Arti, `false` → force Arti on.
   Future<void> connect({
     required String configJson,
     String? exitCountry,
     List<String>? allowedPackages,
     List<String>? disallowedPackages,
+    bool? skipArtiOverride,
   }) =>
       _ch.invokeMethod<void>('connect', {
         'config': configJson,
         'exitCountry': exitCountry,
         'allowedPackages': allowedPackages,
         'disallowedPackages': disallowedPackages,
+        'skipArtiOverride': skipArtiOverride,
       });
 
   Future<void> disconnect() => _ch.invokeMethod<void>('disconnect');
