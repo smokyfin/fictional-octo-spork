@@ -183,8 +183,23 @@ fn routing_block() -> Value {
                 "outboundTag": "dns-out"
             },
             // Loopback / RFC1918 / link-local traffic stays on the
-            // device — never tunnelled.
-            { "type": "field", "ip": ["geoip:private"], "outboundTag": "direct" },
+            // device — never tunnelled. We use explicit CIDRs because
+            // xray's `geoip:private` would require shipping `geoip.dat`
+            // alongside the binary, which we don't (yet) do.
+            {
+                "type": "field",
+                "ip": [
+                    "127.0.0.0/8",
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16",
+                    "169.254.0.0/16",
+                    "::1/128",
+                    "fc00::/7",
+                    "fe80::/10"
+                ],
+                "outboundTag": "direct"
+            },
             // Default: everything else goes through proxy.
             { "type": "field", "network": "tcp,udp", "outboundTag": "proxy" },
         ],
