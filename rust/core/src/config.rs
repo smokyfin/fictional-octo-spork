@@ -39,6 +39,12 @@ pub struct UserPrefs {
     /// Android per-app routing — packages explicitly excluded from the VPN.
     #[serde(default)]
     pub disallowed_packages: Option<Vec<String>>,
+
+    /// Route the VLESS dial through the Arti Tor client. When `false`
+    /// (default) the engine connects to the VLESS server directly; when
+    /// `true` it tunnels the connection through Tor first.
+    #[serde(default)]
+    pub route_through_tor: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

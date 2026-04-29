@@ -41,7 +41,27 @@ class HomeScreen extends ConsumerWidget {
                 label: const Text('Import config'),
                 onPressed: () => context.push('/import'),
               ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 24),
+            // Route through Tor toggle. The default (off) is a direct
+            // VLESS+Reality dial to the configured server; turning it on
+            // adds an Arti-Tor hop in front of the proxy outbound.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: SwitchListTile(
+                value: state.routeThroughTor,
+                onChanged: state.status == VpnStatus.disconnected ||
+                        state.status == VpnStatus.error
+                    ? (v) => ctrl.setRouteThroughTor(v)
+                    : null,
+                title: const Text('Route through Tor'),
+                subtitle: const Text(
+                  'Off: direct to VLESS server. On: VLESS dial passes '
+                  'through Arti / Tor first.',
+                ),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            const SizedBox(height: 16),
             FilledButton.tonal(
               onPressed: state.config == null
                   ? null
@@ -80,9 +100,13 @@ class HomeScreen extends ConsumerWidget {
       case VpnStatus.disconnected:
         return 'Disconnected';
       case VpnStatus.connecting:
-        return 'Negotiating bridge…';
+        return s.routeThroughTor
+            ? 'Bootstrapping Tor + Xray…'
+            : 'Starting Xray…';
       case VpnStatus.connected:
-        return 'Connected via Tor';
+        return s.routeThroughTor
+            ? 'Connected via Tor + VLESS'
+            : 'Connected via VLESS';
       case VpnStatus.disconnecting:
         return 'Tearing down…';
       case VpnStatus.error:

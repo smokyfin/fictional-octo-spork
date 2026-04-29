@@ -97,11 +97,13 @@ class MainActivity : FlutterActivity() {
         val allowed = args["allowedPackages"] as List<String>?
         @Suppress("UNCHECKED_CAST")
         val disallowed = args["disallowedPackages"] as List<String>?
+        val routeThroughTor = args["routeThroughTor"] as Boolean? ?: false
 
         val intent = Intent(this, FfVpnService::class.java).apply {
             action = FfVpnService.ACTION_START
             putExtra(FfVpnService.EXTRA_CONFIG, configJson)
             putExtra(FfVpnService.EXTRA_EXIT_COUNTRY, exitCountry)
+            putExtra(FfVpnService.EXTRA_ROUTE_THROUGH_TOR, routeThroughTor)
             putStringArrayListExtra(
                 FfVpnService.EXTRA_ALLOWED, allowed?.let(::ArrayList)
             )

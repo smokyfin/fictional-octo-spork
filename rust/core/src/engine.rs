@@ -1,19 +1,52 @@
-//! VPN engine — the orchestrator that wires Leaf #1 → Arti → Leaf #2 together
-//! and owns the platform-supplied TUN file descriptor.
+//! VPN engine — the orchestrator.
+//!
+//! Pipeline (default, "direct" mode):
+//!
+//! ```text
+//!   TUN fd ──┐                    ┌──> VLESS+Reality+(grpc|xhttp) outbound
+//!            └─> tun2socks/v2 ──> SOCKS5 ──> xray-core ──> Internet
+//! ```
+//!
+//! Pipeline ("via Tor", UI toggle):
+//!
+//! ```text
+//!   TUN fd ──┐
+//!            └─> tun2socks/v2 ──> SOCKS5 ──> xray-core ──┐
+//!                                                       │
+//!                                  arti-client SOCKS <──┘
+//!                                  (Tor) ──> VLESS exit
+//! ```
+//!
+//! `tun2socks/v2` and `xray-core` are both Go libraries we link in via the
+//! `xray_bridge` cgo shim (`native/xray_bridge`). They are exposed to Rust
+//! through [`xray_runtime::XrayInstance`] and
+//! [`xray_runtime::Tun2SocksHandle`], both RAII-managed.
+//!
+//! Arti runs in-process on the Tokio runtime owned by this crate; the
+//! engine wires its SOCKS5 listener as an upstream proxy of xray's VLESS
+//! outbound (`streamSettings.sockopt.dialerProxy = "arti-socks"`).
 
 use parking_lot::Mutex;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use crate::config::AppConfig;
-use crate::error::Result;
-use crate::pt::{self, PluggableTransport};
+use crate::error::{Error, Result};
 use crate::runtime::{Cancel, SocksEndpoint};
 
 pub mod arti_runtime;
+pub mod xray_config;
+pub mod xray_runtime;
+
+// Kept compiling for now — the leaf path is no longer reachable but the
+// module still type-checks against the pinned `leaf` crate. We will drop
+// it (and the workspace dependency) in a follow-up once the xray pipeline
+// is verified end-to-end on device.
+#[allow(dead_code)]
 pub mod leaf_config;
 
 /// Information the platform must give the engine when starting. The TUN file
@@ -24,8 +57,7 @@ pub struct PlatformContext {
     /// Owned TUN file descriptor opened by the platform layer.
     pub tun_fd: i32,
 
-    /// IP assigned to the TUN interface inside the VPN session — also the
-    /// address our embedded DNS server listens on.
+    /// IP assigned to the TUN interface inside the VPN session.
     pub tun_addr: IpAddr,
 
     /// MTU for the TUN interface.
@@ -34,8 +66,10 @@ pub struct PlatformContext {
     /// Application-private writable directory.
     pub private_dir: PathBuf,
 
-    /// Provider selection for the Pluggable Transport layer.
-    pub pt_provider: pt::Provider,
+    /// Provider selection for the (legacy) Pluggable Transport layer.
+    /// Retained for ABI compatibility with the platform shims; the
+    /// xray-based pipeline does not consult it.
+    pub pt_provider: crate::pt::Provider,
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -45,6 +79,10 @@ pub struct Status {
     pub pt_socks: Option<String>,
     pub arti_socks: Option<String>,
     pub tun_addr: Option<String>,
+    /// Local SOCKS5 endpoint xray exposes to tun2socks (debug surface).
+    pub xray_socks: Option<String>,
+    /// `"direct"` or `"via-tor"` depending on the user's UI toggle.
+    pub route_mode: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +100,11 @@ pub struct Engine {
     cancel: Cancel,
     status: Arc<Mutex<Status>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
-    pt: Mutex<Option<Box<dyn PluggableTransport>>>,
+    /// Tun2socks engine — must be dropped *before* xray so it stops
+    /// pumping packets into a dead socks listener.
+    tun: Mutex<Option<xray_runtime::Tun2SocksHandle>>,
+    /// xray-core instance.
+    xray: Mutex<Option<xray_runtime::XrayInstance>>,
 }
 
 impl Engine {
@@ -79,60 +121,92 @@ impl Engine {
             ..Status::default()
         }));
 
-        // 1. Pluggable Transport (Leaf #1) — Arti will use this SOCKS as its
-        //    bridge transport. Random port + auth.
-        let pt = pt::spawn(ctx.pt_provider, cancel.clone()).await?;
-        info!(
-            provider = pt.name(),
-            socks = %pt.socks().addr,
-            "PT layer up"
+        // 1. Decide route mode based on the UI toggle.
+        let via_tor = cfg.user.route_through_tor;
+        status.lock().route_mode = Some(
+            if via_tor { "via-tor" } else { "direct" }.to_string(),
         );
-        status.lock().pt_provider = Some(pt.name().to_string());
-        status.lock().pt_socks = Some(pt.socks().addr.to_string());
 
-        // 2. Arti (Tor) — listens on a random local SOCKS port; uses the PT
-        //    SOCKS as its bridge transport.
-        let arti_socks = SocksEndpoint::new_random()?;
-        let arti_task = arti_runtime::spawn_arti(
-            cfg.clone(),
-            pt.socks().clone(),
-            arti_socks.clone(),
+        // 2. Optionally bring up Arti first — xray's config below will
+        //    point its VLESS outbound at this SOCKS endpoint.
+        let mut tasks: Vec<JoinHandle<()>> = Vec::new();
+        let arti_socks_opt = if via_tor {
+            let arti_socks = SocksEndpoint::new_random()?;
+            // Re-use the existing Arti spawner; the obsolete `pt_socks`
+            // argument is kept around purely to satisfy its current
+            // signature. Bridges are disabled inside `build_arti_config`.
+            let pt_socks = SocksEndpoint::new_random()?;
+            let arti_task = arti_runtime::spawn_arti(
+                cfg.clone(),
+                pt_socks,
+                arti_socks.clone(),
+                ctx.private_dir.clone(),
+                cancel.clone(),
+            )
+            .await?;
+            tasks.push(arti_task);
+            status.lock().arti_socks = Some(arti_socks.addr.to_string());
+            info!(addr = %arti_socks.addr, "Arti SOCKS up");
+            Some(arti_socks.addr)
+        } else {
+            None
+        };
+
+        // 3. Random SOCKS5 endpoint that xray will expose to tun2socks.
+        let xray_socks = SocksEndpoint::new_random()?.addr;
+        status.lock().xray_socks = Some(xray_socks.to_string());
+
+        // 4. Emit the xray JSON config and start the xray instance.
+        let xray_cfg_value = match arti_socks_opt {
+            Some(arti) => xray_config::build_via_tor(&cfg, xray_socks, arti),
+            None => xray_config::build_direct(&cfg, xray_socks),
+        };
+        let xray_cfg_json = serde_json::to_string(&xray_cfg_value).map_err(Error::from)?;
+        info!(
+            socks = %xray_socks,
+            via_tor,
+            network = %cfg.outbound.network,
+            "starting xray-core",
+        );
+        let xray = xray_runtime::XrayInstance::start(&xray_cfg_json)?;
+
+        // 5. Wire the TUN fd into tun2socks pointed at xray's SOCKS in.
+        //    From here on, the Go side owns the fd; the Rust caller's
+        //    `FdGuard` will be disarmed on a successful return.
+        let proxy_url = format!("socks5://{xray_socks}");
+        let tun = match xray_runtime::Tun2SocksHandle::start(
+            ctx.tun_fd,
+            ctx.tun_mtu,
+            &proxy_url,
+            Duration::from_secs(60),
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                // Make sure xray is torn down before we propagate, so we
+                // don't leak the singleton instance.
+                drop(xray);
+                cancel.cancel();
+                return Err(e);
+            }
+        };
+        info!(proxy = %proxy_url, "tun2socks engaged");
+
+        // 6. IPC server — UI ↔ engine bridge.
+        let ipc_task = crate::ipc::spawn_ipc_server(
             ctx.private_dir.clone(),
+            status.clone(),
             cancel.clone(),
         )
         .await?;
-        info!(socks = %arti_socks.addr, "Arti up");
-        status.lock().arti_socks = Some(arti_socks.addr.to_string());
-
-        // 3. Embedded DNS resolver — bound on 127.0.0.1:<random high port>
-        //    because Android sandbox forbids binding privileged ports.
-        //    Leaf #2's router DNATs all UDP/53 traffic to this port.
-        let dns = crate::dns::spawn_dns_proxy(cfg.clone(), arti_socks.clone(), cancel.clone())
-            .await?;
-        let dns_port = dns.bound_port;
-        let dns_task = dns.task;
-
-        // 4. Leaf #2 — TUN inbound + VLESS+Reality outbound chain (and SOCKS
-        //    pre-stage that hands traffic off to Arti). The router includes
-        //    a DNAT rule for udp/53 → 127.0.0.1:dns_port.
-        let leaf_main_cfg =
-            leaf_config::main_engine_config(&cfg, &ctx, &arti_socks, dns_port)?;
-        let leaf_task =
-            leaf_config::run_leaf_with_config("leaf-main", leaf_main_cfg, cancel.clone())?;
-        info!("Leaf #2 (TUN→VLESS) up");
-
-        // 5. IPC server — UI ↔ engine bridge. Lives in the private dir.
-        let ipc_task =
-            crate::ipc::spawn_ipc_server(ctx.private_dir.clone(), status.clone(), cancel.clone())
-                .await?;
+        tasks.push(ipc_task);
 
         let engine = Arc::new(Engine {
             cancel,
             status,
-            tasks: Mutex::new(vec![arti_task, leaf_task, dns_task, ipc_task]),
-            pt: Mutex::new(Some(pt)),
+            tasks: Mutex::new(tasks),
+            tun: Mutex::new(Some(tun)),
+            xray: Mutex::new(Some(xray)),
         });
-
         Ok(engine)
     }
 
@@ -150,12 +224,13 @@ impl Engine {
         info!("VPN engine stopping");
         self.cancel.cancel();
 
-        // Tear down PT first so Arti gets clean EOFs upstream. Take the
-        // pointer out of the mutex inside a small scope so the (non-Send)
-        // parking_lot guard is dropped before we hit `.await`.
-        let pt = { self.pt.lock().take() };
-        if let Some(pt) = pt {
-            pt.shutdown().await;
+        // Drop tun2socks first so xray stops seeing new client conns.
+        {
+            let _ = self.tun.lock().take();
+        }
+        // Then xray.
+        {
+            let _ = self.xray.lock().take();
         }
 
         let tasks = std::mem::take(&mut *self.tasks.lock());

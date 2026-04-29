@@ -49,6 +49,7 @@ class FfVpnService : VpnService() {
         val exitCountry = intent.getStringExtra(EXTRA_EXIT_COUNTRY)
         val allowed = intent.getStringArrayListExtra(EXTRA_ALLOWED)
         val disallowed = intent.getStringArrayListExtra(EXTRA_DISALLOWED)
+        val routeThroughTor = intent.getBooleanExtra(EXTRA_ROUTE_THROUGH_TOR, false)
 
         val tunAddr = "10.10.0.2"
         val mtu = 1500
@@ -100,17 +101,16 @@ class FfVpnService : VpnService() {
             NativeBridge.init()
             VpnEventBus.emitLog("[svc] NativeBridge.init() ok")
             val parsed = JSONObject(configJson)
-            // Inject the user-selected Tor exit country into the config blob
-            // under `user.exit_country` — the Rust `AppConfig::user::exit_country`
-            // field is what `arti_runtime.rs` reads when applying StreamPrefs.
-            // Without this the country picker would silently no-op.
+            // Inject UI-driven user preferences into the config blob under
+            // `user.*`. Rust's `AppConfig::user` is what the engine reads.
+            val user = parsed.optJSONObject("user") ?: JSONObject()
             if (!exitCountry.isNullOrBlank()) {
-                val user = parsed.optJSONObject("user") ?: JSONObject()
                 user.put("exit_country", exitCountry)
-                parsed.put("user", user)
             }
+            user.put("route_through_tor", routeThroughTor)
+            parsed.put("user", user)
             nativeStartCalled = true
-            VpnEventBus.emitLog("[svc] calling NativeBridge.start (exitCountry=${exitCountry ?: "-"})")
+            VpnEventBus.emitLog("[svc] calling NativeBridge.start (exitCountry=${exitCountry ?: "-"}, viaTor=$routeThroughTor)")
             val rc = NativeBridge.start(parsed.toString(), privateDir, fd, tunAddr, mtu)
             if (rc != 0) {
                 val err = runCatching { NativeBridge.lastError() }.getOrNull()
@@ -221,6 +221,7 @@ class FfVpnService : VpnService() {
         const val EXTRA_EXIT_COUNTRY = "exit_country"
         const val EXTRA_ALLOWED = "allowed"
         const val EXTRA_DISALLOWED = "disallowed"
+        const val EXTRA_ROUTE_THROUGH_TOR = "route_through_tor"
         private const val NOTIF_ID = 0xC0DE
         private const val NOTIF_CHANNEL_ID = "ff_vpn"
         private const val TAG = "FfVpnService"

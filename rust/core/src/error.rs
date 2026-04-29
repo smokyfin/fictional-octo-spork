@@ -28,6 +28,12 @@ pub enum Error {
     #[error("arti error: {0}")]
     Arti(String),
 
+    #[error("engine error: {0}")]
+    Engine(String),
+
+    #[error("xray runtime is unavailable on this platform")]
+    XrayUnavailable,
+
     #[error("dns error: {0}")]
     Dns(String),
 

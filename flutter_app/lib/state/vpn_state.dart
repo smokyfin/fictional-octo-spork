@@ -23,6 +23,7 @@ class VpnState {
     this.exitCountry,
     this.allowedPackages,
     this.disallowedPackages,
+    this.routeThroughTor = false,
     this.errorMessage,
     this.lastStatusJson,
     this.logs = const [],
@@ -33,6 +34,9 @@ class VpnState {
   final String? exitCountry;
   final List<String>? allowedPackages;
   final List<String>? disallowedPackages;
+  /// When true, the engine sends the VLESS dial through Arti / Tor first.
+  /// When false (default) it connects to the VLESS server directly.
+  final bool routeThroughTor;
   final String? errorMessage;
   final Map<String, dynamic>? lastStatusJson;
   final List<String> logs;
@@ -43,6 +47,7 @@ class VpnState {
     Object? exitCountry = _unset,
     Object? allowedPackages = _unset,
     Object? disallowedPackages = _unset,
+    bool? routeThroughTor,
     Object? errorMessage = _unset,
     Object? lastStatusJson = _unset,
     List<String>? logs,
@@ -59,6 +64,7 @@ class VpnState {
         disallowedPackages: identical(disallowedPackages, _unset)
             ? this.disallowedPackages
             : disallowedPackages as List<String>?,
+        routeThroughTor: routeThroughTor ?? this.routeThroughTor,
         errorMessage: identical(errorMessage, _unset)
             ? this.errorMessage
             : errorMessage as String?,
@@ -163,6 +169,7 @@ class VpnController extends StateNotifier<VpnState> {
         exitCountry: state.exitCountry,
         allowedPackages: state.allowedPackages,
         disallowedPackages: state.disallowedPackages,
+        routeThroughTor: state.routeThroughTor,
       );
       // Stay in `connecting` — the platform method is fire-and-forget on
       // Android (startForegroundService returns before the Rust engine has
@@ -191,6 +198,8 @@ class VpnController extends StateNotifier<VpnState> {
       state = state.copyWith(allowedPackages: pkgs);
   void setDisallowedPackages(List<String>? pkgs) =>
       state = state.copyWith(disallowedPackages: pkgs);
+  void setRouteThroughTor(bool value) =>
+      state = state.copyWith(routeThroughTor: value);
 
   void clearLogs() => state = state.copyWith(logs: const []);
 

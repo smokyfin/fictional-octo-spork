@@ -6,6 +6,11 @@ package com.incss.ff.vpn
  */
 object NativeBridge {
     init {
+        // Load the Go-side xray-core + tun2socks bridge first so its
+        // symbols (xray_start, xray_stop, tun2socks_start, ...) are
+        // already resolved by the time we link in libff_vpn_jni, which
+        // declares them as NEEDED dynamic dependencies.
+        System.loadLibrary("xray_bridge")
         System.loadLibrary("ff_vpn_jni")
     }
 

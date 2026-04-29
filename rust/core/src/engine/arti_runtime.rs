@@ -217,7 +217,12 @@ async fn handle_socks_conn(
     Ok(())
 }
 
-/// Read the SOCKS5 method-selection message and answer with `username/password`.
+/// Read the SOCKS5 method-selection message and answer either with the
+/// no-auth method (if the client offered it) or with `username/password`.
+///
+/// Xray-core's SOCKS outbound dials no-auth by default, while Leaf's SOCKS
+/// outbound (back when we used it) dialed user/pass. We accept either so
+/// the same Arti listener can serve both.
 async fn socks5_handshake(sock: &mut TcpStream, auth: &(String, String)) -> Result<()> {
     let mut header = [0u8; 2];
     sock.read_exact(&mut header).await.map_err(Error::from)?;
@@ -228,10 +233,19 @@ async fn socks5_handshake(sock: &mut TcpStream, auth: &(String, String)) -> Resu
     let mut methods = vec![0u8; nmethods];
     sock.read_exact(&mut methods).await.map_err(Error::from)?;
 
+    if methods.contains(&0x00) {
+        // Accept no-auth and skip the username/password subnegotiation
+        // entirely. Used by Xray's `socks` outbound.
+        sock.write_all(&[0x05, 0x00]).await.map_err(Error::from)?;
+        let _ = auth;
+        return Ok(());
+    }
     if !methods.contains(&0x02) {
-        // Reject — we require user/pass.
+        // Neither no-auth nor user/pass — reject the connection.
         sock.write_all(&[0x05, 0xff]).await.map_err(Error::from)?;
-        return Err(Error::Other("client refused user/pass auth".into()));
+        return Err(Error::Other(
+            "client offered no acceptable SOCKS5 method".into(),
+        ));
     }
     sock.write_all(&[0x05, 0x02]).await.map_err(Error::from)?;
 

@@ -24,12 +24,14 @@ class VpnChannel {
     String? exitCountry,
     List<String>? allowedPackages,
     List<String>? disallowedPackages,
+    bool routeThroughTor = false,
   }) =>
       _ch.invokeMethod<void>('connect', {
         'config': configJson,
         'exitCountry': exitCountry,
         'allowedPackages': allowedPackages,
         'disallowedPackages': disallowedPackages,
+        'routeThroughTor': routeThroughTor,
       });
 
   Future<void> disconnect() => _ch.invokeMethod<void>('disconnect');
