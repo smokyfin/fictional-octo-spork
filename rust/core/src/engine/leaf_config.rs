@@ -5,13 +5,16 @@
 //! The schema we emit here is what `leaf::config::json::from_string` will
 //! consume.
 //!
-//! NOTE on gRPC: leaf v0.14.2 ships TLS / Reality / WebSocket / QUIC /
-//! AMux transports out of the box, but does **not** expose a stand-alone
-//! `grpc` outbound. The `grpc_service_name` we keep in `AppConfig` is still
-//! parsed and persisted so that, when leaf gains gRPC (or when we swap
-//! the PT provider for Xray-core), we already have it. Today we wire
-//! VLESS-over-Reality (Reality is the transport, VLESS is the payload)
-//! through leaf's standard `chain` actor.
+//! NOTE on stream transports: leaf v0.14.2 ships TLS / Reality / WebSocket
+//! / QUIC / AMux transports out of the box, but does **not** expose a
+//! stand-alone `grpc` or `xhttp` (Xray) outbound. The `network` and
+//! `grpc_service_name` we keep in `AppConfig` are parsed and persisted so
+//! that, when leaf gains them (or when we swap the proxy engine for
+//! Xray-core), we already have them. Today we wire VLESS-over-Reality
+//! (Reality is the transport, VLESS is the payload) through leaf's
+//! standard `chain` actor — neither gRPC nor xhttp framing is added on
+//! top, which matches what we have on the server when reachable directly
+//! over Reality + VLESS.
 
 use crate::config::AppConfig;
 use crate::engine::PlatformContext;

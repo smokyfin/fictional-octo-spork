@@ -49,8 +49,18 @@ pub struct VlessOutbound {
     pub user_id: String,
     #[serde(default)]
     pub flow: String,
+    /// VLESS stream transport: `grpc` or `xhttp`. Older configs without
+    /// this field default to `grpc` for backward compatibility.
+    #[serde(default = "default_network")]
+    pub network: String,
+    /// Only present when `network == "grpc"`. Empty string for `xhttp`.
+    #[serde(default)]
     pub grpc_service_name: String,
     pub reality: RealitySettings,
+}
+
+fn default_network() -> String {
+    "grpc".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,19 +159,24 @@ impl AppConfig {
                 "only reality streamSettings.security is supported".into(),
             ));
         }
-        if !outbound
-            .stream_settings
-            .network
-            .eq_ignore_ascii_case("grpc")
-        {
-            return Err(Error::InvalidConfig(
-                "only grpc streamSettings.network is supported".into(),
-            ));
+        let network_lc = outbound.stream_settings.network.to_ascii_lowercase();
+        if network_lc != "grpc" && network_lc != "xhttp" {
+            return Err(Error::InvalidConfig(format!(
+                "only grpc/xhttp streamSettings.network are supported (got {})",
+                outbound.stream_settings.network
+            )));
         }
-        let grpc = outbound
-            .stream_settings
-            .grpc_settings
-            .ok_or_else(|| Error::InvalidConfig("missing grpcSettings".into()))?;
+        // gRPC carries a `serviceName` we record verbatim; `xhttp` has no
+        // analogous identifier we need to preserve, so we leave it empty.
+        let grpc_service_name = if network_lc == "grpc" {
+            outbound
+                .stream_settings
+                .grpc_settings
+                .ok_or_else(|| Error::InvalidConfig("missing grpcSettings".into()))?
+                .service_name
+        } else {
+            String::new()
+        };
         let reality = outbound
             .stream_settings
             .reality_settings
@@ -197,7 +212,8 @@ impl AppConfig {
                 port: vnext.port,
                 user_id: user.id,
                 flow: user.flow,
-                grpc_service_name: grpc.service_name,
+                network: network_lc,
+                grpc_service_name,
                 reality: RealitySettings {
                     server_name: reality.server_name,
                     public_key: reality.public_key,
@@ -265,19 +281,51 @@ mod tests {
       }]
     }"#;
 
+    const SAMPLE_XHTTP: &str = r#"{
+      "bridge_rsa_id": "9A5E28708880EB92217A937F56D640D23551F886",
+      "bridge_ed25519_id": "1Vvw08iKSZVW9ghoiYBWl7qR30d5DNJu0c7EFp0XFZ4",
+      "doh_server": "https://dns.google/dns-query",
+      "outbounds": [{
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {"vnext":[{"address":"144.31.184.170","port":8090,
+          "users":[{"id":"3701ba53-4573-466c-a474-f37923ce5bd1","encryption":"none","flow":""}]}]},
+        "streamSettings": {"network":"xhttp",
+          "security":"reality","realitySettings":{"serverName":"ads.x5.ru",
+            "publicKey":"94T5KqTcnBNXDmlobpF7rmsYmPt6vqB_dWQcIi9XjAI",
+            "shortId":"6b2f4e6ac9b1d2f0","fingerprint":"qq"}}
+      }]
+    }"#;
+
     #[test]
     fn parses_sample_config() {
         let cfg = AppConfig::from_json(SAMPLE).unwrap();
         assert_eq!(cfg.outbound.address, "217.177.47.30");
         assert_eq!(cfg.outbound.port, 8090);
+        assert_eq!(cfg.outbound.network, "grpc");
         assert_eq!(cfg.outbound.grpc_service_name, "grpc");
         assert_eq!(cfg.outbound.reality.server_name, "urentbike.ru");
         assert_eq!(cfg.doh_server_ip.unwrap().to_string(), "8.8.8.8");
     }
 
     #[test]
+    fn parses_xhttp_config() {
+        let cfg = AppConfig::from_json(SAMPLE_XHTTP).unwrap();
+        assert_eq!(cfg.outbound.address, "144.31.184.170");
+        assert_eq!(cfg.outbound.network, "xhttp");
+        assert_eq!(cfg.outbound.grpc_service_name, "");
+        assert_eq!(cfg.outbound.reality.server_name, "ads.x5.ru");
+    }
+
+    #[test]
     fn rejects_non_vless_outbound() {
         let bad = SAMPLE.replace("\"protocol\": \"vless\"", "\"protocol\": \"trojan\"");
+        assert!(AppConfig::from_json(&bad).is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_network() {
+        let bad = SAMPLE.replace("\"network\":\"grpc\"", "\"network\":\"tcp\"");
         assert!(AppConfig::from_json(&bad).is_err());
     }
 }
